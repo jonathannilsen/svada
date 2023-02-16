@@ -9,11 +9,40 @@ Python representation of an SVD Peripheral unit.
 """
 
 from __future__ import annotations
-from typing import List, Tuple, Union, Dict, Iterable, NamedTuple
+from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional
 from pprint import pformat
 import xml.etree.ElementTree as ET
 
 from . import util
+
+
+_COMMON_PREFIXES = ["global"]
+_COMMON_SUFFIXES = ["ns", "s"]
+
+
+def _simplify_peripheral_name(peripheral_name: str) -> str:
+    return util.strip_prefixes_suffixes(
+        peripheral_name.lower(), _COMMON_PREFIXES, _COMMON_SUFFIXES
+    )
+
+
+def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element:
+    """
+    Find the first peripheral node with a name matching peripheral_name.
+    Note that peripheral names are simplified before comparison, by removing common prefixes and
+    suffixes.
+
+    :param device: ElementTree element for the device definition in the SVD file.
+    :param peripheral_name: Name of the peripheral to instantiate. Example "uicr".
+    """
+    peripheral_name = _simplify_peripheral_name(peripheral_name)
+
+    for peripheral in device.findall("peripherals/peripheral"):
+        name = _simplify_peripheral_name(peripheral.findtext("name").lower())
+        if name == peripheral_name:
+            return peripheral
+
+    raise LookupError(f"Peripheral '{peripheral_name}' was not found in the device SVD")
 
 
 class Peripheral:
@@ -26,48 +55,32 @@ class Peripheral:
     the SVD.
     """
 
-    COMMON_PREFIXES = ["global"]
-    COMMON_SUFFIXES = ["ns", "s"]
-
-    def __init__(
-        self, device: ET.Element, peripheral_name: str, base_address: int = None
-    ):
+    def __init__(self, peripheral: ET.Element, base_address: int = None):
         """
         Initialize the class attribute(s).
 
-        :param device: ElementTree element for the SVD file device.
-        :param peripheral_name: Name of the peripheral to instantiate. Example "uicr".
+        :param peripheral_node: ElementTree element for the peripheral node in the device SVD file.
         :param base_address: Specific base address to use for the peripheral.
         """
 
-        peripheral_name = util.strip_prefixes_suffixes(
-            peripheral_name.lower(), self.COMMON_PREFIXES, self.COMMON_SUFFIXES
-        )
+        peripheral_name = peripheral.findtext("name")
+        if peripheral_name is None:
+            raise LookupError("Peripheral node is missing a 'name' property")
 
-        registers = None
-
-        for peripheral in device.findall("peripherals/peripheral"):
-            name = util.strip_prefixes_suffixes(
-                peripheral.find("name").text.lower(),
-                self.COMMON_PREFIXES,
-                self.COMMON_SUFFIXES,
-            )
-            if name == peripheral_name and peripheral.find("registers") is not None:
-                base_address = (
-                    base_address
-                    if base_address is not None
-                    else util.to_int(peripheral.find("baseAddress").text)
-                )
-                registers = peripheral.find("registers")
-                break
+        registers = peripheral.find("registers")
+        base_address = (base_address
+                if base_address is not None
+                else util.to_int(peripheral.findtext("baseAddress")))
 
         if base_address is None or registers is None:
             raise LookupError(
-                f"Peripheral '{peripheral_name}' is not found in the supplied SVD file"
+                f"Peripheral '{peripheral_name}' does not contain required properties 'baseAddress'"
+                "and 'registers'"
             )
 
         self._name: str = peripheral_name
         self._base_address: int = base_address
+        self._header_struct_name: Optional[str] = peripheral.findtext("headerStructName")
 
         self._memory_map: Dict[int, Register] = get_memory_map(registers, base_address)
 
@@ -77,8 +90,18 @@ class Peripheral:
 
     @property
     def name(self) -> str:
-        """Name of the peripheral."""
+        """Simplified name of the peripheral."""
         return self._name
+
+    @property
+    def full_name(self) -> str:
+        """Full name of the peripheral as given in the SVD file."""
+        return self._full_name
+
+    @property
+    def header_struct_name(self) -> Optional[str]:
+        """Name of the header struct for the peripheral"""
+        return self._header_struct_name
 
     @property
     def memory_map(self) -> Dict[int, Register]:
@@ -640,6 +663,8 @@ def get_register_elements(
         if element.find("addressOffset") is not None
         else 0
     )
+
+    header_struct_name = element.findtext("headerStructName")
 
     if name.endswith("[%s]"):
         array_length = util.to_int(element.find("dim").text)
