@@ -9,6 +9,7 @@ Python representation of an SVD Peripheral unit.
 """
 
 from __future__ import annotations
+
 from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional
 from pprint import pformat
 import xml.etree.ElementTree as ET
@@ -68,9 +69,11 @@ class Peripheral:
             raise LookupError("Peripheral node is missing a 'name' property")
 
         registers = peripheral.find("registers")
-        base_address = (base_address
-                if base_address is not None
-                else util.to_int(peripheral.findtext("baseAddress")))
+        base_address = (
+            base_address
+            if base_address is not None
+            else util.to_int(peripheral.findtext("baseAddress"))
+        )
 
         if base_address is None or registers is None:
             raise LookupError(
@@ -80,7 +83,9 @@ class Peripheral:
 
         self._name: str = peripheral_name
         self._base_address: int = base_address
-        self._header_struct_name: Optional[str] = peripheral.findtext("headerStructName")
+        self._header_struct_name: Optional[str] = peripheral.findtext(
+            "headerStructName"
+        )
 
         self._memory_map: Dict[int, Register] = get_memory_map(registers, base_address)
 
