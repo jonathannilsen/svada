@@ -14,6 +14,17 @@ import typing
 import xml.etree.ElementTree as ET
 from typing import Callable, Generic, List, NamedTuple, Optional, Tuple, TypeVar, Union
 
+"""
+<data_type>     ::= <attr_spec> | <elem_spec>
+<attr_spec>     ::= Attr[<optional_type>]
+<elem_spec>     ::= Elem[<list_type> | <optional_type>]
+<list_type>     ::= List[<scalar_type>]
+<optional_type> ::= Optional[<scalar_type>] | <scalar_type>
+<scalar_type>   ::= int | bool | str | <enum_type> | <class_type>
+<class_type>    ::= class with @svd_object
+<enum_type>     ::= class that is a subclass of enum.Enum
+"""
+
 # TODO: add supported types
 T = TypeVar("T")
 
@@ -116,7 +127,30 @@ def unwrap_optional(type_spec: type) -> Tuple[type, bool]:
     return type_spec, False
 
 
-def make_elem_extractor(svd_name: str, result_type: type) -> ExtractFunction:
+def from_xml(cls, elem: ET.Element):
+    svd_fields = {
+        name: extract(elem) for name, extract in cls._svd_extractors.items()
+    }
+
+    return cls(**svd_fields)
+
+
+@ft.singledispatch
+def _make_xml_extractor(field_type: type) -> ExtractFunction:
+    raise NotImplementedError(f"Cannot extract type {field_type}")
+
+
+@_make_xml_extractor.register
+def _(field_type: Attr) -> ExtractFunction:
+    result_type, is_optional = unwrap_optional(result_type)
+    return compose_extractor(
+        ft.partial(extract_attribute_text, name=svd_name),
+        make_element_converter(result_type),
+        exit_on_none=is_optional)
+
+
+@_make_xml_extractor.register
+def _(field_type: Elem) -> ExtractFunction:
     if typing.get_origin(result_type) is list:
         result_type = typing.get_args(result_type)[0]
         if typing.get_origin(result_type) is list:
@@ -145,52 +179,60 @@ def make_elem_extractor(svd_name: str, result_type: type) -> ExtractFunction:
         make_element_converter(result_type), exit_on_none=is_optional)
 
 
-def make_attr_extractor(svd_name: str, result_type: type) -> ExtractFunction:
-    result_type, is_optional = unwrap_optional(result_type)
-    return compose_extractor(
-        ft.partial(extract_attribute_text, name=svd_name),
-        make_element_converter(result_type),
-        exit_on_none=is_optional)
+class TypeInfo(NamedTuple):
+    origin: type
+    args: Tuple[type, ...]
+
+    @classmethod
+    def from_type(cls, field_type: type) -> TypeInfo:
+        origin = typing.get_origin(field_type)
+        args = typing.get_args(field_type)
+        return TypeInfo(origin, args)
 
 
-def from_xml(cls, elem: ET.Element):
-    svd_fields = {
-        name: extract(elem) for name, extract in cls._svd_extractors.items()
-    }
+def make_extractor_elem(type_info: TypeInfo, field_name: str) -> ExtractFunction:
+    pass
 
-    return cls(**svd_fields)
+
+def make_extractor_attr(type_info: TypeInfo, field_name: str) -> ExtractFunction:
+    pass
+
+
+def make_extractor_field(type_info: TypeInfo, field_name: str) -> Optional[ExtractFunction]:
+    if type_info.origin is not Elem and type_info.origin is not Attr:
+        return None
+
+    if len(type_info.args) != 1:
+        raise TypeError("Invalid type hint") # FIXME: better error message
+
+    if type_info.origin is Elem:
+        pass
+
+    if type_info.origin is Attr:
+        pass
+
+    raise TypeError("Invalid type hint") # FIXME: better error message
 
 
 def svd_object(cls):
     if not dc.is_dataclass(cls):
-        raise TypeError("xml_deserialize can only be used on dataclasses")
+        raise TypeError("@svd_object can only be used on dataclasses")
 
     type_hints = typing.get_type_hints(cls)
     extractors = {}
 
     for field in dc.fields(cls):
         field_type = type_hints[field.name]
-        type_origin = typing.get_origin(field_type)
 
-        if type_origin is not Attr and type_origin is not Elem:
-            if field.default == dc.MISSING and field.default_factory == dc.MISSING:
-                raise ValueError("Non-svd fields must have a default value")
-            continue
-
-        type_args = typing.get_args(field_type)
-        if len(type_args) != 1:
-            raise TypeError(
-                f"Invalid type hint for {cls.__qualname__}.{field.name}")
-
+        type_info = TypeInfo.from_type(field_type)
         svd_name = to_camel_case(field.name)
-        result_type = type_args[0]
+        extractor = make_extractor_field(type_info, svd_name)
 
-        if type_origin is Attr:
-            extractor = make_attr_extractor(svd_name, result_type)
-        else:
-            extractor = make_elem_extractor(svd_name, result_type)
+        if extractor is not None:
+            extractors[field.name] = extractor
 
-        extractors[field.name] = extractor
+        elif field.default == dc.MISSING and field.default_factory == dc.MISSING:
+                raise ValueError("Non-svd fields must have a default value")
 
     cls._svd_extractors = extractors
     cls.from_xml = classmethod(from_xml)
