@@ -12,10 +12,10 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Generic, List, Optional, NewType, TypeVar
 
-from deserialize import Attr, Elem, svd_object
+from deserialize import Attr, Elem, svd_dataclass
 
 
-class Access(enum.StrEnum):
+class Access(enum.Enum):
     READ_ONLY = "read-only"
     READ_WRITE = "read-write"
     WRITE_ONCE = "writeOnce"
@@ -25,7 +25,7 @@ class Access(enum.StrEnum):
         return cls(value.lower())
 
 
-class ReadAction(enum.StrEnum):
+class ReadAction(enum.Enum):
     CLEAR = "clear"
     SET = "set"
     MODIFY = "modify"
@@ -35,8 +35,7 @@ class ReadAction(enum.StrEnum):
         return cls(value.lower())
 
 
-@svd_object
-@dc.dataclass(frozen=True)
+@svd_dataclass(frozen=True)
 class RegisterPropertiesGroup:
     """Container for SVD registerPropertiesGroup properties"""
 
@@ -45,123 +44,97 @@ class RegisterPropertiesGroup:
     reset_value: Elem[Optional[int]] = None
     reset_mask: Elem[Optional[int]] = None
 
-    def is_valid(self):
+    def is_reg_valid(self):
         return all(
             v is not None
             for v in (self.size, self.access, self.reset_value, self.reset_mask)
         )
 
 
-@dc.dataclass(frozen=True)
-class BitRangeOffsetWidthStyle(XmlDeserialize):
-    bit_offset: int = xml_field(tag="bitOffset", factory=util.to_int)
-    bit_width: int = xml_field(tag="bitWidth", factory=util.to_int)
-
-
-@dc.dataclass(frozen=True)
-class BitRangeLsbMsbStyle(XmlDeserialize):
-    lsb: int = xml_field(tag="lsb", factory=util.to_int)
-    msb: int = xml_field(tag="msb", factory=util.to_int)
-
-
-@dc.dataclass(frozen=True)
-class BitRangePattern(XmlDeserialize):
-    bit_range: str = xml_field(tag="bitRange")
-
-    lsb: int = dc.field(init=False)
-    msb: int = dc.field(init=False)
-
-    def __post_init__(self):
-        match = re.fullmatch(r"\[(?P<lsb>[0-9]+):(?P<msb>[0-9]+)[\]")
-        assert match is not None
-        self.lsb = int(match["lsb"])
-        self.msb = int(match["msb"])
-
-
-@dc.dataclass(frozen=True)
-class BitRange(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class BitRange:
     """Container for SVD bitRange properties"""
 
-    offset_width: Optional[BitRangeOffsetWidthStyle] = xml_field(
-        factory=BitRangeOffsetWidthStyle.from_xml, default=None
-    )
-    lsb_msb: Optional[BitRangeLsbMsbStyle] = xml_field(
-        factory=BitRangeLsbMsbStyle.from_xml, default=None
-    )
-    pattern: Optional[BitRangePattern] = xml_field(
-        factory=BitRangePattern.from_xml, default=None
-    )
+    bit_offset: Elem[Optional[int]] # = xml_field(tag="bitOffset", factory=util.to_int)
+    bit_width: Elem[Optional[int]] # int = xml_field(tag="bitWidth", factory=util.to_int)
+    lsb: Elem[Optional[int]] #  = xml_field(tag="lsb", factory=util.to_int)
+    msb: Elem[Optional[int]] #  = xml_field(tag="msb", factory=util.to_int)
+    bit_range: Elem[Optional[str]] # = xml_field(tag="bitRange")
 
     def __post_init__(self):
-        assert sum(1 for v in dc.astuple(self) if v is not None) == 1
+        if self.bit_range is not None:
+            match = re.fullmatch(r"\[(?P<lsb>[0-9]+):(?P<msb>[0-9]+)[\]", self.bit_range)
+            assert match is not None
+            self.lsb = int(match["lsb"])
+            self.msb = int(match["msb"])
+            self.bit_offset = self.lsb
+            self.bit_width = self.msb - self.lsb + 1
+        elif self.lsb is not None and self.msb is not None:
+            self.bit_offset = self.lsb
+            self.bit_width = self.msb - self.lsb + 1
+            self.bit_range = f"{self.lsb}:{self.msb}"
+        elif self.bit_offset is not None and self.bit_width is not None:
+            self.lsb = self.bit_offset
+            self.msb = self.lsb + self.bit_width - 1
+            self.bit_range = f"{self.lsb}:{self.msb}"
+        else:
+            raise ValueError(f"Invalid {self.__class__.__name__}: {self}")
 
 
-@dc.dataclass
-class DimElementGroup(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class DimElementGroup:
     """Container for SVD dimElementGroup properties"""
 
-    dim: int = xml_field(tag="dim", default=None, factory=util.to_int)
-    dim_increment: int = xml_field(
-        tag="dimIncrement", default=None, factory=util.to_int
-    )
+    dim: Elem[int] # = xml_field(tag="dim", default=None, factory=util.to_int)
+    dim_increment: Elem[int] #  = xml_field(    tag="dimIncrement", default=None, factory=util.to_int)
 
-    def is_valid(self):
+    def is_dim_valid(self):
         return self.dim_increment is None or self.dim is not None
 
-    def is_specified(self):
+    def is_dim_specified(self):
         return self.dim_increment is not None
 
 
-@dc.dataclass(frozen=True)
+@svd_dataclass(frozen=True)
 class RangeWriteConstraint:
-    minimum: int = xml_field(tag="minimum", factory=util.to_int)
-    maximum: int = xml_field(tag="maximum", factory=util.to_int)
+    minimum: Elem[int] # = xml_field(tag="minimum", factory=util.to_int)
+    maximum: Elem[int] #  = xml_field(tag="maximum", factory=util.to_int)
 
 
-@dc.dataclass(frozen=True)
-class WriteConstraint(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class WriteConstraint:
     """Write constraint for a register"""
 
-    write_as_read: Optional[bool] = xml_field(tag="writeAsRead", default=None)
-    use_enumerated_values: Optional[bool] = xml_field(
-        tag="useEnumeratedValues", default=None
-    )
-    range_constraint: Optional[RangeWriteConstraint] = xml_field(
-        factory=RangeWriteConstraint.from_xml, default=None
-    )
+    write_as_read: Elem[Optional[bool]] # = xml_field(tag="writeAsRead", default=None)
+    use_enumerated_values: Elem[Optional[bool]] # = xml_field(tag="useEnumeratedValues", default=None)
+    range: Elem[Optional[RangeWriteConstraint]] #= xml_field(
 
     def __post_init__(self):
-        assert sum(1 for v in dc.astuple(self) if v is not None) == 1
+        if sum(1 for v in dc.astuple(self) if v is not None) != 1:
+            raise ValueError(f"Invalid {self.__class__.__name__}: {self}")
 
 
-@dc.dataclass(frozen=True)
-class Cluster(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class Cluster(DimElementGroup, RegisterPropertiesGroup):
     """Container for relevant fields in a SVD cluster node"""
 
-    name: str = xml_field(tag="name")
-    description: Optional[str] = xml_field(tag="description", default=None)
-    alternate_cluster: Optional[str] = xml_field(
-        tag="alternateCluster", default=None)
-    header_struct_name: Optional[str] = xml_field(
-        tag="headerStructName", default=None)
-    address_offset: int = xml_field(
-        tag="addressOffset", default=0, factory=util.to_int)
-    dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
-    reg_prop: RegisterPropertiesGroup = xml_field(
-        factory=RegisterPropertiesGroup.from_xml
-    )
-    register: List[Register] = xml_field(
-        tag="register", multiple=True, factory=Register.from_xml, default_factory=list
-    )
-    cluster: List[Cluster] = xml_field(
-        tag="cluster", multiple=True, factory=Cluster.from_xml, default_factory=list
-    )
+    name: Elem[str] # = xml_field(tag="name")
+    description: Elem[Optional[str]] # = xml_field(tag="description", default=None)
+    alternate_cluster: Elem[Optional[str]] # = xml_field(tag="alternateCluster", default=None)
+    header_struct_name: Elem[Optional[str]] # = xml_field(tag="headerStructName", default=None)
+    address_offset: Elem[int] # = xml_field(tag="addressOffset", default=0, factory=util.to_int)
+    # dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
+    #reg_prop: RegisterPropertiesGroup = xml_field(
+    #    factory=RegisterPropertiesGroup.from_xml
+    #)
+    register: List[Register] #= xml_field(tag="register", multiple=True, factory=Register.from_xml, default_factory=list)
+    cluster: List[Cluster] #= xml_field(tag="cluster", multiple=True, factory=Cluster.from_xml, default_factory=list)
 
     def __post_init__(self):
         assert self.dim.is_valid()
 
 
-class ModifiedWriteValues(enum.StrEnum):
+class ModifiedWriteValues(enum.Enum):
     ONE_TO_CLEAR = "oneToClear"
     ONE_TO_SET = "oneToSet"
     ONE_TO_TOGGLE = "oneToToggle"
@@ -173,59 +146,50 @@ class ModifiedWriteValues(enum.StrEnum):
     MODIFY = "modify"
 
 
-@dc.dataclass(frozen=True)
-class Register(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class Register(DimElementGroup, RegisterPropertiesGroup, WriteConstraint):
     """Container for relevant fields in a SVD register node"""
 
-    name: str = xml_field(tag="name")
-    display_name: Optional[str] = xml_field(tag="displayName", default=None)
-    description: Optional[str] = xml_field(tag="description", default=None)
-    alternate_group: Optional[str] = xml_field(
-        tag="alternateGroup", default=None)
-    alternate_register: Optional[str] = xml_field(
-        tag="alternateRegister", default=None)
-    header_struct_name: Optional[str] = xml_field(
-        tag="headerStructName", default=None)
-    address_offset: int = xml_field(
-        tag="addressOffset", default=0, factory=util.to_int)
-    dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
-    reg_prop: RegisterPropertiesGroup = xml_field(
-        factory=RegisterPropertiesGroup.from_xml
-    )
-    data_type: Optional[str] = xml_field(tag="dataType", default=None)
-    modified_write_values: Optional[str] = xml_field(
-        tag="modifiedWriteValues", default=None
-    )
-    write_constraint: Optional[WriteConstraint] = xml_field(
-        factory=WriteConstraint.from_xml, default=None
-    )
-    fields: List[Field] = xml_field(
-        tag="field", multiple=True, factory=Field.from_xml, default_factory=list
-    )
+    name: Elem[str] # = xml_field(tag="name")
+    display_name: Elem[Optional[str]] # = xml_field(tag="displayName", default=None)
+    description: Elem[Optional[str]] # = xml_field(tag="description", default=None)
+    alternate_group: Elem[Optional[str]] #= xml_field(tag="alternateGroup", default=None)
+    alternate_register: Elem[Optional[str]] # = xml_field(tag="alternateRegister", default=None)
+    header_struct_name: Elem[Optional[str]] # = xml_field(tag="headerStructName", default=None)
+    address_offset: Elem[int] = 0 # = xml_field(tag="addressOffset", default=0, factory=util.to_int)
+    #dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
+    #reg_prop: RegisterPropertiesGroup = xml_field(
+    #    factory=RegisterPropertiesGroup.from_xml
+    #)
+    data_type: Elem[Optional[str]] #= xml_field(tag="dataType", default=None)
+    modified_write_values: Elem[Optional[str]] #= xml_field(tag="modifiedWriteValues", default=None)
+    write_constraint: Elem[Optional[WriteConstraint]] #= xml_field(
+    #    factory=WriteConstraint.from_xml, default=None
+    #)
+    field: Elem[List[Field]] #= xml_field(tag="field", multiple=True, factory=Field.from_xml, default_factory=list)
 
     def __post_init__(self):
-        assert self.dim.is_valid()
-        assert self.reg_prop.is_valid()
+        assert self.is_dim_valid()
+        assert self.is_reg_valid()
 
 
-@dc.dataclass(frozen=True)
-class Field(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class Field(BitRange):
     """Container for relevant fields in a SVD field node"""
 
-    derived_from: Optional[str] = xml_field(attrib="derivedFrom", default=None)
+    derived_from: Attr[Optional[str]] # = xml_field(attrib="derivedFrom", default=None)
 
-    name: str = xml_field(tag="name")
-    description: Optional[str] = xml_field(tag="description", default=None)
-    bit_range: BitRange = xml_field(factory=BitRange.from_xml)
-    access: Optional[Access] = xml_field(tag="access", default=None)
-    modified_write_values: Optional[str] = xml_field(
-        tag="modifiedWriteValues", default=None
-    )
-    write_constraint: Optional[WriteConstraint] = xml_field(
-        factory=WriteConstraint.from_xml, default=None
-    )
-    read_action: Optional[ReadAction] = xml_field(
-        tag="readAction", default=None)
+    name: Elem[str] #= xml_field(tag="name")
+    description: Elem[Optional[str]] # = xml_field(tag="description", default=None)
+    #bit_range: BitRange = xml_field(factory=BitRange.from_xml)
+    access: Elem[Optional[Access]] # = xml_field(tag="access", default=None)
+    modified_write_values: Elem[Optional[str]] #= xml_field(
+    #    tag="modifiedWriteValues", default=None
+    #)
+    write_constraint: Elem[Optional[WriteConstraint]] #= xml_field(
+    #     factory=WriteConstraint.from_xml, default=None
+    # )
+    read_action: Elem[Optional[ReadAction]] #= xml_field(tag="readAction", default=None)
 
 
 class EnumUsage(enum.Enum):
@@ -238,37 +202,37 @@ class EnumUsage(enum.Enum):
         return cls(value.lower())
 
 
-@dc.dataclass(frozen=True)
-class EnumeratedValue(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class EnumeratedValue:
     """Container for relevant fields in a SVD enumeratedValue node"""
 
-    name: Optional[str] = xml_field(tag="name", default=None)
-    description: Optional[str] = xml_field(tag="description", default=None)
-    value: Optional[int] = xml_field(
-        tag="value", default=None, factory=util.to_int)
-    is_default: bool = xml_field(
-        tag="isDefault", default=False, factory=util.to_bool)
+    name: Elem[Optional[str]] #  = xml_field(tag="name", default=None)
+    description: Elem[Optional[str]] # = xml_field(tag="description", default=None)
+    value: Elem[Optional[int]] #  = xml_field(
+    #    tag="value", default=None, factory=util.to_int)
+    is_default: Elem[bool] # = xml_field(
+    #    tag="isDefault", default=False, factory=util.to_bool)
 
     def __post_init__(self):
         assert self.value is not None or self.is_default
 
 
-@dc.dataclass(frozen=True)
-class EnumeratedValues(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class EnumeratedValues:
     """Container for relevant fields in a SVD enumeratedValues node"""
 
-    name: str = xml_field(tag="name")
-    header_enum_name: Optional[str] = xml_field(
-        tag="headerEnumName", default=None)
-    usage: EnumUsage = xml_field(
-        tag="usage", default=EnumUsage.READ_WRITE, factory=EnumUsage.from_str
-    )
-    enumerated_value: List[EnumeratedValue] = xml_field(
-        tag="enumeratedValue",
-        multiple=True,
-        factory=EnumeratedValue.from_xml,
-        default_factory=list,
-    )
+    name: Elem[str] # = xml_field(tag="name")
+    header_enum_name: Elem[Optional[str]] #= xml_field(
+    #    tag="headerEnumName", default=None)
+    usage: Elem[EnumUsage] #= xml_field(
+    #    tag="usage", default=EnumUsage.READ_WRITE, factory=EnumUsage.from_str
+    #)
+    enumerated_value: Elem[List[EnumeratedValue]] # = xml_field(
+    #    tag="enumeratedValue",
+    #    multiple=True,
+    #    factory=EnumeratedValue.from_xml,
+    #    default_factory=list,
+    #)
 
 
 class AddressBlockUsage(enum.Enum):
@@ -291,60 +255,60 @@ class Protection(enum.Enum):
         return cls(value.lower())
 
 
-@dc.dataclass(frozen=True)
-class AddressBlock(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class AddressBlock:
     """Container for relevant fields in a SVD addressBlock node"""
 
-    offset: int = xml_field(tag="offset", default=0, factory=util.to_int)
-    size: int = xml_field(tag="size", factory=util.to_int)
-    usage: Optional[AddressBlockUsage] = xml_field(tag="usage", default=None)
-    protection: Optional[Protection] = xml_field(
-        tag="protection", default=None)
+    offset: Elem[int] = 0 #= xml_field(tag="offset", default=0, factory=util.to_int)
+    size: Elem[int] # = xml_field(tag="size", factory=util.to_int)
+    usage: Elem[Optional[AddressBlockUsage]] #  = xml_field(tag="usage", default=None)
+    protection: Elem[Optional[Protection]] #= xml_field(
+    #    tag="protection", default=None)
 
 
-@dc.dataclass(frozen=True)
-class Interrupt(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class Interrupt:
     """Container for relevant fields in a SVD interrupt node"""
 
-    name: str = xml_field(tag="name")
-    description: Optional[str] = xml_field(tag="description", default=None)
-    value: int = xml_field(tag="value", factory=util.to_int)
+    name: Elem[str] # = xml_field(tag="name")
+    description: Elem[Optional[str]] # = xml_field(tag="description", default=None)
+    value: Elem[int] # = xml_field(tag="value", factory=util.to_int)
 
 
-@dc.dataclass(frozen=True)
-class Peripheral(XmlDeserialize):
+@svd_dataclass(frozen=True)
+class Peripheral(DimElementGroup, RegisterPropertiesGroup):
     """"""
 
-    derived_from: Optional[str] = xml_field(attrib="derivedFrom", default=None)
+    derived_from: Attr[Optional[str]] #  = xml_field(attrib="derivedFrom", default=None)
 
-    name: str = xml_field(tag="name")
-    version: Optional[str] = xml_field(tag="version", default=None)
-    description: Optional[str] = xml_field(tag="description", default=None)
-    alternate_peripheral: Optional[str] = xml_field(
-        tag="alternatePeripheral", default=None
-    )
-    group_name: Optional[str] = xml_field(tag="groupName", default=None)
-    prepend_to_name: Optional[str] = xml_field(
-        tag="prependToName", default=None)
-    append_to_name: Optional[str] = xml_field(tag="appendToName", default=None)
-    header_struct_name: Optional[str] = xml_field(
-        tag="headerStructName", default=None)
-    disable_condition: Optional[str] = xml_field(
-        tag="disableCondition", default=None)
-    base_address: int = xml_field(tag="baseAddress", factory=util.to_int)
-    dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
-    reg_prop: RegisterPropertiesGroup = xml_field(
-        factory=RegisterPropertiesGroup.from_xml
-    )
-    address_block: List[AddressBlock] = xml_field(
-        factory=AddressBlock.from_xml, multiple=True, default_factory=list
-    )
-    interrupt: List[Interrupt] = xml_field(
-        factory=Interrupt.from_xml, multiple=True, default_factory=list
-    )
-    registers: List[Register] = xml_field(
-        factory=Register.from_xml, multiple=True, default_factory=list
-    )
+    name: Elem[str] # = xml_field(tag="name")
+    version: Elem[Optional[str]] = None # = xml_field(tag="version", default=None)
+    description: Elem[Optional[str]] = None# = xml_field(tag="description", default=None)
+    alternate_peripheral: Elem[Optional[str]] = None #  = xml_field(
+        #tag="alternatePeripheral", default=None
+    #)
+    group_name: Elem[Optional[str]] = None #  = xml_field(tag="groupName", default=None)
+    prepend_to_name: Elem[Optional[str]] = None # = xml_field(
+    #    tag="prependToName", default=None)
+    append_to_name: Elem[Optional[str]] = None#  = xml_field(tag="appendToName", default=None)
+    header_struct_name: Elem[Optional[str]] = None  #= xml_field(
+    #    tag="headerStructName", default=None)
+    disable_condition: Elem[Optional[str]] = None # = xml_field(
+    #    tag="disableCondition", default=None)
+    base_address: Elem[int] # = xml_field(tag="baseAddress", factory=util.to_int)
+    #dim: DimElementGroup = xml_field(factory=DimElementGroup.from_xml)
+    #reg_prop: RegisterPropertiesGroup = xml_field(
+    #    factory=RegisterPropertiesGroup.from_xml
+    #)
+    address_block: Elem[List[AddressBlock]] #= xml_field(
+    #    factory=AddressBlock.from_xml, multiple=True, default_factory=list
+    #)
+    interrupt: Elem[List[Interrupt]] #= xml_field(
+    #    factory=Interrupt.from_xml, multiple=True, default_factory=list
+    #)
+    register: Elem[List[Register]] # = xml_field(
+    #    factory=Register.from_xml, multiple=True, default_factory=list
+    #)
 
 
 class EndianType(enum.Enum):
@@ -358,38 +322,38 @@ class EndianType(enum.Enum):
         return cls(value.lower())
 
 
-class SauAccess(enum.StrEnum):
+class SauAccess(enum.Enum):
     NON_SECURE = "n"
     SECURE_CALLABLE = "c"
 
 
-@dc.dataclass(frozen=True)
-class SauRegion(XmlDeserialize):
-    enabled: bool = xml_field(attr="enabled", default=True, factory=util.to_bool)
-    name: Optional[str] = xml_field(attr="name", default=None)
-
-    base: int = xml_field(tag="base", factory=util.to_int)
-    limit: int = xml_field(tag="limit", factory=util.to_int)
-    access: SauAccess = xml_field(tag="access", factory=SauAccess)
-
-
-@dc.dataclass(frozen=True)
-class SauRegionsConfig(XmlDeserialize):
-    enabled: bool = xml_field(attr="enabled", factory=util.to_bool, default=True)
-    protection_when_disabled: Optional[str] = xml_field(attr="protectionWhenDisabled", default=None)
-    region: List[SauRegion] = xml_field(tag="region", factory=SauRegion.from_xml, default_factory=list)
+@svd_dataclass(frozen=True)
+class SauRegion:
+    enabled: Attr[bool] = True#  = xml_field(attr="enabled", default=True, factory=util.to_bool)
+    name: Attr[Optional[str]] = None # = xml_field(attr="name", default=None)
+    base: Elem[int] # = xml_field(tag="base", factory=util.to_int)
+    limit: Elem[int] # = xml_field(tag="limit", factory=util.to_int)
+    access: Elem[SauAccess] # = xml_field(tag="access", factory=SauAccess)
 
 
-@dc.dataclass(frozen=True)
-class Cpu(XmlDeserialize):
-    name: str = xml_field(tag="name")
-    revision: str = xml_field(tag="revision")
-    endian: EndianType = xml_field(tag="endian", factory=EndianType.from_str)
-    mpu_present: bool = xml_field(tag="mpuPresent", factory=util.to_bool)
-    fpu_present: bool = xml_field(tag="fpuPresent", factory=util.to_bool)
-    fpu_dp: bool = xml_field(tag="fpuDP", factory=util.to_bool, default=False)
-    icache_present: bool = xml_field(
-        tag="icachePresent", factory=util.to_bool, default=False)
+@svd_dataclass(frozen=True)
+class SauRegionsConfig:
+    enabled: Attr[bool] = True # = xml_field(attr="enabled", factory=util.to_bool, default=True)
+    protection_when_disabled: Attr[Optional[Protection]] = None #= xml_field(attr="protectionWhenDisabled", default=None)
+    region: Elem[List[SauRegion]] #xml_field(tag="region", factory=SauRegion.from_xml, default_factory=list)
+
+
+@svd_dataclass(frozen=True)
+class Cpu:
+    name: Attr[str] # = xml_field(tag="name")
+    revision: Attr[str] # = xml_field(tag="revision")
+    endian: Attr[EndianType] # = xml_field(tag="endian", factory=EndianType.from_str)
+    mpu_present: Attr[bool] # = xml_field(tag="mpuPresent", factory=util.to_bool)
+    fpu_present: Attr[bool] # = xml_field(tag="fpuPresent", factory=util.to_bool)
+    # FIXME
+    fpu_dP: Attr[bool] = False # = xml_field(tag="fpuDP", factory=util.to_bool, default=False)
+    icache_present: Attr[bool] = False # = xml_field(
+    #    tag="icachePresent", factory=util.to_bool, default=False)
     dcache_present: bool = xml_field(
         tag="dcachePresent", factory=util.to_bool, default=False)
     itcm_present: bool = xml_field(
@@ -435,9 +399,11 @@ class Device(XmlDeserialize):
     #     path="./vendorExtensions//*", default_factory=list)
 
 
+"""
+
 @dc.dataclass
 class SvdPeripheralInfo(XmlDeserialize):
-    """Container for relevant fields in a SVD peripheral node"""
+    # Container for relevant fields in a SVD peripheral node
 
     name: str = xml_field(tag="name")
     base_address: int = xml_field(tag="baseAddress", factory=parse_svd_int)
@@ -548,7 +514,7 @@ def parse_device_peripherals(
 
 
 def parse_peripheral_info(device: ET.Element) -> Dict[str, SvdPeripheralInfo]:
-    """Parse the peripherals in device to a list of SvdPeripheralInfo"""
+    # Parse the peripherals in device to a list of SvdPeripheralInfo
     peripherals = {}
     peripheral_derived_from = {}
     for peripheral in device.findall("peripherals/peripheral"):
@@ -576,3 +542,4 @@ def parse_svd(device: ET.Element):
     peripherals = parse_peripheral_info(device)
     registers = parse_device_peripherals(device, peripherals)
     return SvdDevice(name, peripherals, registers)
+"""

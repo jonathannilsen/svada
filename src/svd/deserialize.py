@@ -16,14 +16,28 @@ from typing import Callable, Generic, List, NamedTuple, Optional, Tuple, TypeVar
 
 """
 <data_type>     ::= <attr_spec> | <elem_spec>
-<attr_spec>     ::= Attr[<optional_type>]
-<elem_spec>     ::= Elem[<list_type> | <optional_type>]
-<list_type>     ::= List[<scalar_type>]
-<optional_type> ::= Optional[<scalar_type>] | <scalar_type>
-<scalar_type>   ::= int | bool | str | <enum_type> | <class_type>
+<attr_spec>     ::= Attr[<optional_type>]                         # 1/N child elements
+<elem_spec>     ::= Elem[<list_type> | <optional_type>]           # 1 tag
+<list_type>     ::= List[<scalar_type>]                           # N equal child elements
+<optional_type> ::= Optional[<scalar_type>] | <scalar_type>       # 0 or 1 child element
+<scalar_type>   ::= int | bool | str | <enum_type> | <class_type> #
 <class_type>    ::= class with @svd_object
 <enum_type>     ::= class that is a subclass of enum.Enum
 """
+
+"""
+(attr, list), (int | bool | str) ->
+
+Maybe just parse until you reach the scalar_type?
+Find how to extract the data:
+- 1 attribute of current node
+- 0 child nodes
+- 1 child node
+- N child nodes
+
+Then convert the data to the correct type
+"""
+
 
 # TODO: add supported types
 T = TypeVar("T")
@@ -56,8 +70,8 @@ def extract_element_text(elem: ET.Element) -> Optional[str]:
     return elem.text
 
 
-def extract_attribute_text(elem: ET.Element, name: str) -> Optional[str]:
-    return elem.attrib.get(name)
+def extract_attribute(elem: ET.Element, name: str) -> Optional[str]:
+    return AttrNode(text=elem.attrib.get(name))
 
 
 def to_int(value: str) -> int:
@@ -93,130 +107,111 @@ def compose_extractor(*functions, exit_on_none: bool = False) -> Callable:
             if exit_on_none and result is None:
                 return result
         return result
+
     return f
 
 
-def make_element_converter(result_type: type):
+def make_element_converter(result_type: type, simple_only: bool = False):
     if result_type is int:
-        return to_int
+        return lambda e: to_int(e.text)
     if result_type is bool:
-        return to_bool
+        return lambda e: to_bool(e.text)
     if result_type is str:
-        return str
+        return lambda e: e.text
     if result_type is enum.Enum:
-        return result_type
-    raise NotImplementedError(
-        f"Conversion not implemented for type {result_type}")
-
-
-def make_list_extractor(svd_name: str, converter: Callable):
-    def f(elem: ET.Element):
-        children = extract_children(elem, svd_name)
-        return [
-            converter(c) for c in children
-        ]
-    return f
-
-
-def unwrap_optional(type_spec: type) -> Tuple[type, bool]:
-    if typing.get_origin(type_spec) is Union:
-        type_args = typing.get_args(type_spec)
-        if len(type_args) != 2 or type_args[1] is not type(None):
-            raise TypeError(f"Invalid type hint: {type_spec}")
-        return type_args[0], True
-    return type_spec, False
+        return lambda e: result_type(e.text)
+    if not simple_only and hasattr(result_type, "_svd_extractors"):
+        return result_type.from_xml
+    raise NotImplementedError(f"Conversion not implemented for type {result_type}")
 
 
 def from_xml(cls, elem: ET.Element):
-    svd_fields = {
-        name: extract(elem) for name, extract in cls._svd_extractors.items()
-    }
-
+    svd_fields = {name: extract(elem) for name, extract in cls._svd_extractors.items()}
     return cls(**svd_fields)
 
 
-@ft.singledispatch
-def _make_xml_extractor(field_type: type) -> ExtractFunction:
-    raise NotImplementedError(f"Cannot extract type {field_type}")
+class AttrNode(NamedTuple):
+    text: Optional[str]
 
 
-@_make_xml_extractor.register
-def _(field_type: Attr) -> ExtractFunction:
-    result_type, is_optional = unwrap_optional(result_type)
-    return compose_extractor(
-        ft.partial(extract_attribute_text, name=svd_name),
-        make_element_converter(result_type),
-        exit_on_none=is_optional)
+class TypeNode(NamedTuple):
+    value: type
+    children: List[TypeNode]
 
 
-@_make_xml_extractor.register
-def _(field_type: Elem) -> ExtractFunction:
-    if typing.get_origin(result_type) is list:
-        result_type = typing.get_args(result_type)[0]
-        if typing.get_origin(result_type) is list:
-            raise TypeError("nested not supported")
-
-        if hasattr(result_type, "_svd_extractors"):
-            converter = result_type.from_xml
-        else:
-            converter = compose_extractor(extract_element_text,
-                                          make_element_converter(result_type))
-
-        return make_list_extractor(svd_name, converter)
-
-    result_type, is_optional = unwrap_optional(result_type)
-
-    if hasattr(result_type, "_svd_extractors"):
-        return compose_extractor(
-            ft.partial(extract_child, name=svd_name),
-            result_type.from_xml,
-            exit_on_none=is_optional
-        )
-
-    return compose_extractor(
-        ft.partial(extract_child, name=svd_name),
-        extract_element_text,
-        make_element_converter(result_type), exit_on_none=is_optional)
+def normalize_type_tree(base):
+    origin = typing.get_origin(base)
+    if origin is None:
+        return TypeNode(base, [])
+    children = [normalize_type_tree(t) for t in typing.get_args(base)]
+    return TypeNode(origin, children)
 
 
-class TypeInfo(NamedTuple):
-    origin: type
-    args: Tuple[type, ...]
-
-    @classmethod
-    def from_type(cls, field_type: type) -> TypeInfo:
-        origin = typing.get_origin(field_type)
-        args = typing.get_args(field_type)
-        return TypeInfo(origin, args)
+def extract_list(elem, field_name: str, converter):
+    children = extract_children(elem, field_name)
+    return [converter(c) for c in children]
 
 
-def make_extractor_elem(type_info: TypeInfo, field_name: str) -> ExtractFunction:
-    pass
+def extract_optional(elem, field_name: str, extractor, converter):
+    child = extractor(elem, field_name)
+    if child is None:
+        return None
+    return converter(child)
 
 
-def make_extractor_attr(type_info: TypeInfo, field_name: str) -> ExtractFunction:
-    pass
+def extract_base(elem, field_name: str, extractor, converter):
+    return converter(extractor(elem, field_name))
 
 
-def make_extractor_field(type_info: TypeInfo, field_name: str) -> Optional[ExtractFunction]:
-    if type_info.origin is not Elem and type_info.origin is not Attr:
+def make_extractor_elem(type_tree: TypeNode, field_name: str) -> ExtractFunction:
+    if type_tree.value is list:
+        extractor = ft.partial(extract_list, field_name=field_name)
+        type_tree = type_tree.children[0]
+    elif type_tree.value is Union and type_tree.children[1].value is type(None):
+        extractor = ft.partial(extract_optional, field_name=field_name, extractor=extract_child)
+        type_tree = type_tree.children[0]
+    else:
+        extractor = ft.partial(extract_base, field_name=field_name, extractor=extract_child)
+
+    converter = make_element_converter(type_tree.value)
+    extractor.keywords["converter"] = converter
+    return extractor
+
+
+def make_extractor_attr(type_tree: TypeNode, field_name: str) -> ExtractFunction:
+    if type_tree.value is Union and type_tree.children[1].value is None:
+        extractor = ft.partial(extract_optional, field_name=field_name, extractor=extract_attribute)
+        type_tree = type_tree.children[0]
+    else:
+        extractor = ft.partial(extract_base, field_name=field_name, extractor=extract_attribute)
+
+    converter = make_element_converter(type_tree.value, simple_only=True)
+    extractor.keywords["converter"] = converter
+    return extractor
+
+
+def make_extractor_field(
+    type_tree: TypeNode, field_name: str
+) -> Optional[ExtractFunction]:
+    if type_tree.value is not Elem and type_tree.value is not Attr:
         return None
 
-    if len(type_info.args) != 1:
-        raise TypeError("Invalid type hint") # FIXME: better error message
+    if len(type_tree.children) != 1:
+        raise TypeError("Invalid type hint")  # FIXME: better error message
 
-    if type_info.origin is Elem:
-        pass
+    if type_tree.value is Elem:
+        return make_extractor_elem(type_tree.children[0], field_name)
 
-    if type_info.origin is Attr:
-        pass
+    if type_tree.value is Attr:
+        return make_extractor_attr(type_tree.children[0], field_name)
 
-    raise TypeError("Invalid type hint") # FIXME: better error message
+    raise TypeError("Invalid type hint")  # FIXME: better error message
 
 
-def svd_object(cls):
-    if not dc.is_dataclass(cls):
-        raise TypeError("@svd_object can only be used on dataclasses")
+def svd_dataclass(cls, *args, **kwargs):
+    cls = dc.dataclass(cls, *args, **kwargs)
+    # if not dc.is_dataclass(cls):
+    #     raise TypeError("@svd_object can only be used on dataclasses")
 
     type_hints = typing.get_type_hints(cls)
     extractors = {}
@@ -224,42 +219,49 @@ def svd_object(cls):
     for field in dc.fields(cls):
         field_type = type_hints[field.name]
 
-        type_info = TypeInfo.from_type(field_type)
         svd_name = to_camel_case(field.name)
-        extractor = make_extractor_field(type_info, svd_name)
+        type_tree = normalize_type_tree(field_type)
+        extractor = make_extractor_field(type_tree, svd_name)
 
         if extractor is not None:
             extractors[field.name] = extractor
 
         elif field.default == dc.MISSING and field.default_factory == dc.MISSING:
-                raise ValueError("Non-svd fields must have a default value")
+            raise ValueError("Non-svd fields must have a default value")
 
     cls._svd_extractors = extractors
     cls.from_xml = classmethod(from_xml)
 
     return cls
 
+"""
+Two cases:
+- If the field has a default, it should have similar behavior as Optional(?)
+  e.g. Attr[bool] = False
+  - Or maybe just make all fields not fail if missing in the svd, then let the constructor handle it
+"""
 
-@svd_object
+
+
+@svd_dataclass
 @dc.dataclass(frozen=True)
 class TestSubObj:
     sub_field: Elem[str]
 
 
-@svd_object
+@svd_dataclass
 @dc.dataclass(frozen=True)
 class TestClass:
     some_attrib: Attr[str]
     some_field: Elem[str]
     some_list: Elem[List[str]]
-    some_sub_obj: Elem[List[TestSubObj]]
+    # some_sub_obj: Elem[List[TestSubObj]]
     some_empty: Elem[Optional[str]]
-    # some_sub_obj: Elem[TestSubObj]
-    # non_deser_field: int = 0
+    some_sub_obj: Elem[TestSubObj]
+    non_deser_field: int = 0
 
 
-TEST_STR = \
-    """<?xml version="1.0" encoding="utf-8"?>
+TEST_STR = """<?xml version="1.0" encoding="utf-8"?>
 <testObject someAttrib="theattrib">
     <someField>thevalue</someField>
     <someList>v1</someList>
