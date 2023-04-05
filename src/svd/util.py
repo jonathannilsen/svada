@@ -47,3 +47,19 @@ def to_int(number: str) -> int:
         return int(number[1:], base=2)
 
     return int(number)
+
+
+def to_bool(value: str) -> bool:
+    """
+    Convert a string representation of a boolean following the SVD format to its corresponding
+    boolean representation.
+
+    :param value: String representation of the boolean.
+
+    :return: Decoded boolean.
+    """
+    if value in ("true", "1"):
+        return True
+    if value in ("false", "0"):
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
