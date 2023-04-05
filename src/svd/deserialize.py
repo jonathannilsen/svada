@@ -39,6 +39,28 @@ Then convert the data to the correct type
 """
 
 
+@enum.unique
+class Source(enum.Enum):
+    ATTR = enum.auto()
+    ELEM = enum.auto()
+
+
+def sdataclass(*args, **kwargs):
+    return dc.dataclass(*args, **kwargs)
+
+
+def sfield(_source: Source, _path: str, /, *args, **kwargs):
+    return dc.field(*args, **kwargs, metadata={"source": _source, "path": _path})
+
+
+def elem(_path: str, /, *args, **kwargs):
+    return sfield(Source.ELEM, _path, *args, **kwargs)
+
+
+def attr(_path: str, /, *args, **kwargs):
+    return sfield(Source.ATTR, _path, *args, **kwargs)
+
+
 # TODO: add supported types
 T = TypeVar("T")
 U = TypeVar("U")
@@ -209,8 +231,6 @@ def make_extractor_field(
 def svd_dataclass(*args, **kwargs):
     def f(cls):
         cls = dc.dataclass(cls, *args, **kwargs)
-        # if not dc.is_dataclass(cls):
-        #     raise TypeError("@svd_object can only be used on dataclasses")
 
         type_hints = typing.get_type_hints(cls)
         extractors = {}
@@ -241,21 +261,19 @@ Two cases:
 
 
 
-@svd_dataclass
-@dc.dataclass(frozen=True)
+@sdataclass(frozen=True)
 class TestSubObj:
-    sub_field: Elem[str]
+    sub_field: str = elem("subField")
 
 
-@svd_dataclass
-@dc.dataclass(frozen=True)
+@sdataclass(frozen=True)
 class TestClass:
-    some_attrib: Attr[str]
-    some_field_diff_name: Elem[str, "someField"]
-    some_list: Elem[List[str]]
+    some_attrib: str = attr("someAttrib")
+    some_field_diff_name: str = elem("someField")
+    some_list: List[str] = elem("someList")
     # some_sub_obj: Elem[List[TestSubObj]]
-    some_empty: Elem[Optional[str]]
-    some_sub_obj: Elem[TestSubObj, "."]
+    some_empty: Optional[str] = elem("someEmpty", default=None)
+    some_sub_obj: TestSubObj = elem(".")
     non_deser_field: int = 0
 
 
