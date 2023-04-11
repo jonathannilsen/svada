@@ -9,9 +9,10 @@ from __future__ import annotations
 import dataclasses as dc
 import enum
 import re
+import typing
 import xml.etree.ElementTree as ET
 from itertools import chain
-from typing import Dict, Generic, List, Optional, NewType, TypeVar, Union
+from typing import Dict, Generic, List, Optional, NamedTuple, NewType, Set, Tuple, TypeVar, Union
 
 from deserialize import sdataclass, attr, elem
 
@@ -94,6 +95,7 @@ class BitRange:
     pattern: Optional[BitRangePattern] = elem(".", default=None)
 
     # TODO: how to have a uniform interface
+    # define a custom from_xml?
 
     def __post_init__(self):
         assert sum(1 for v in dc.astuple(self) if v is not None) == 1
@@ -382,10 +384,176 @@ class Device:
     #     path="./vendorExtensions//*", default_factory=list)
 
 
+@enum.unique
+class Source(enum.Enum):
+    ATTR = enum.auto()
+    ELEM = enum.auto()
+
+
+class Spec(NamedTuple):
+    source: Source
+    path: str
+
+
+def sdataclass(*args, **kwargs):
+    return dc.dataclass(*args, **kwargs)
+
+
+def sfield(_source: Source, _path: str, /, *args, **kwargs):
+    spec = Spec(source=_source, path=_path)
+    return dc.field(*args, **kwargs, metadata={"spec": spec})
+
+
+def elem(_path: str, /, *args, **kwargs):
+    return sfield(Source.ELEM, _path, *args, **kwargs)
+
+
+def attr(_path: str, /, *args, **kwargs):
+    return sfield(Source.ATTR, _path, *args, **kwargs)
+
+
+def extract_children(elem: ET.Element, name: str) -> Optional[List[ET.Element]]:
+    matches = elem.findall(name)
+    return matches if matches else None
+
+
+def extract_child(elem: ET.Element, name: str) -> Optional[ET.Element]:
+    return elem.find(name)
+
+
+def extract_element_text(elem: ET.Element) -> Optional[str]:
+    return elem.text
+
+
+def extract_attribute(elem: ET.Element, name: str) -> Optional[str]:
+    return AttrNode(text=elem.attrib.get(name))
+
+class AttrNode(NamedTuple):
+    text: Optional[str]
+
+def to_int(value: str) -> int:
+    """Convert an SVD integer string to an int"""
+    if value.startswith("0x"):
+        return int(value, base=16)
+    if value.startswith("#"):
+        return int(value[1:], base=2)
+    return int(value)
+
+
+def to_bool(value: str) -> bool:
+    """Convert an SVD boolean string to a bool"""
+    if value in ("true", "1"):
+        return True
+    if value in ("false", "0"):
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
+R = TypeVar("R")
+
+def make_element_converter(result_type: type, simple_only: bool = False):
+    if result_type is int:
+        return lambda e: to_int(e.text)
+    if result_type is bool:
+        return lambda e: to_bool(e.text)
+    if result_type is str:
+        return lambda e: e.text
+    if hasattr(result_type, "from_str"):
+        return lambda e: result_type.from_str(e.text)
+    if not simple_only and hasattr(result_type, "_svd_extractors"):
+        return result_type.from_xml
+    raise NotImplementedError(
+        f"Conversion not implemented for type {result_type}")
+
+
+def from_xml(cls, elem: ET.Element):
+    svd_fields = {}
+    for name, extract in cls._svd_extractors.items():
+        if (value := extract(elem)) is not None:
+            svd_fields[name] = value
+    return cls(**svd_fields)
+
+
+class TypeNode(NamedTuple):
+    value: type
+    children: List[TypeNode]
+
+
+def normalize_type_tree(base):
+    origin = typing.get_origin(base)
+    if origin is None:
+        return TypeNode(base, [])
+    children = [normalize_type_tree(t) for t in typing.get_args(base)]
+    return TypeNode(origin, children)
+
+
+def extract_list(elem, field_name: str, converter):
+    children = extract_children(elem, field_name)
+    if not children:
+        return None
+    return [converter(c) for c in children]
+
+
+def extract_base(elem, field_name: str, extractor, converter):
+    child = extractor(elem, field_name)
+    if child is None:
+        return None
+    return converter(child)
+
+
+def make_extractor_elem(type_tree: TypeNode, field_name: str) -> ExtractFunction:
+    if type_tree.value is list:
+        type_tree = type_tree.children[0]
+        extractor = ft.partial(extract_list, field_name=field_name)
+    else:
+        if type_tree.value is Union and type_tree.children[1].value is type(None):
+            type_tree = type_tree.children[0]
+        extractor = ft.partial(
+            extract_base, field_name=field_name, extractor=extract_child)
+
+    converter = make_element_converter(type_tree.value)
+    extractor.keywords["converter"] = converter
+    return extractor
+
+
+def make_extractor_attr(type_tree: TypeNode, field_name: str) -> ExtractFunction:
+    if type_tree.value is Union and type_tree.children[1].value is type(None):
+        type_tree = type_tree.children[0]
+    extractor = ft.partial(
+        extract_base, field_name=field_name, extractor=extract_attribute)
+
+    converter = make_element_converter(type_tree.value, simple_only=True)
+    extractor.keywords["converter"] = converter
+    return extractor
+
+
+def _parse_object(cls, elem: ET.Element):
+    type_hints = typing.get_type_hints(cls)
+
+    for field in dc.fields(cls):
+        field_spec: Optional[Spec] = field.metadata.get("spec")
+        if field_spec is None:
+            continue
+
+        type_tree = normalize_type_tree(type_hints[field.name])
+
+        if field_spec.source == Source.ELEM:
+            pass
+
+        elif field.spec.source == Source.ATTR:
+            pass
+
+        else:
+            raise ValueError("Invalid source")
+
+
 def parse_device(root: ET.Element):
-    inherit_graphs: Dict[type, Dict[str, str]] = {}
+    inherit: Dict[Tuple[type, str], Set[str]] = {}
+    device = _parse_object(Device, root)
+    # TODO: inheritance
+    return device
 
-
+    
 def main():
     import argparse
     from pathlib import Path

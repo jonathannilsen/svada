@@ -45,12 +45,18 @@ class Source(enum.Enum):
     ELEM = enum.auto()
 
 
+class Spec(NamedTuple):
+    source: Source
+    path: str
+
+
 def sdataclass(*args, **kwargs):
     return dc.dataclass(*args, **kwargs)
 
 
 def sfield(_source: Source, _path: str, /, *args, **kwargs):
-    return dc.field(*args, **kwargs, metadata={"source": _source, "path": _path})
+    spec = Spec(source=_source, path=_path)
+    return dc.field(*args, **kwargs, metadata={"spec": spec})
 
 
 def elem(_path: str, /, *args, **kwargs):
@@ -145,7 +151,8 @@ def make_element_converter(result_type: type, simple_only: bool = False):
         return lambda e: result_type.from_str(e.text)
     if not simple_only and hasattr(result_type, "_svd_extractors"):
         return result_type.from_xml
-    raise NotImplementedError(f"Conversion not implemented for type {result_type}")
+    raise NotImplementedError(
+        f"Conversion not implemented for type {result_type}")
 
 
 def from_xml(cls, elem: ET.Element):
@@ -194,7 +201,8 @@ def make_extractor_elem(type_tree: TypeNode, field_name: str) -> ExtractFunction
     else:
         if type_tree.value is Union and type_tree.children[1].value is type(None):
             type_tree = type_tree.children[0]
-        extractor = ft.partial(extract_base, field_name=field_name, extractor=extract_child)
+        extractor = ft.partial(
+            extract_base, field_name=field_name, extractor=extract_child)
 
     converter = make_element_converter(type_tree.value)
     extractor.keywords["converter"] = converter
@@ -204,7 +212,8 @@ def make_extractor_elem(type_tree: TypeNode, field_name: str) -> ExtractFunction
 def make_extractor_attr(type_tree: TypeNode, field_name: str) -> ExtractFunction:
     if type_tree.value is Union and type_tree.children[1].value is type(None):
         type_tree = type_tree.children[0]
-    extractor = ft.partial(extract_base, field_name=field_name, extractor=extract_attribute)
+    extractor = ft.partial(
+        extract_base, field_name=field_name, extractor=extract_attribute)
 
     converter = make_element_converter(type_tree.value, simple_only=True)
     extractor.keywords["converter"] = converter
@@ -252,13 +261,14 @@ def svd_dataclass(*args, **kwargs):
 
         return cls
     return f
+
+
 """
 Two cases:
 - If the field has a default, it should have similar behavior as Optional(?)
   e.g. Attr[bool] = False
   - Or maybe just make all fields not fail if missing in the svd, then let the constructor handle it
 """
-
 
 
 @sdataclass(frozen=True)
