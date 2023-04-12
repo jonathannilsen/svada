@@ -8,13 +8,206 @@ from __future__ import annotations
 
 import dataclasses as dc
 import enum
+import functools as ft
 import re
 import typing
 import xml.etree.ElementTree as ET
 from itertools import chain
-from typing import Dict, Generic, List, Optional, NamedTuple, NewType, Set, Tuple, TypeVar, Union
+from typing import (
+    Dict,
+    Generic,
+    List,
+    Optional,
+    NamedTuple,
+    NewType,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
-from deserialize import sdataclass, attr, elem
+class Source(enum.Enum):
+    ATTR = enum.auto()
+    ELEM = enum.auto()
+
+
+class Spec(NamedTuple):
+    source: Source
+    path: str
+
+
+def sdataclass(*args, **kwargs):
+    return dc.dataclass(*args, **kwargs)
+
+
+def sfield(_source: Source, _path: str, /, *args, **kwargs):
+    spec = Spec(source=_source, path=_path)
+    return dc.field(*args, **kwargs, metadata={"spec": spec})
+
+
+def elem(_path: str, /, *args, **kwargs):
+    return sfield(Source.ELEM, _path, *args, **kwargs)
+
+
+def attr(_path: str, /, *args, **kwargs):
+    return sfield(Source.ATTR, _path, *args, **kwargs)
+
+
+def extract_children(elem: ET.Element, name: str) -> Optional[List[ET.Element]]:
+    matches = elem.findall(name)
+    return matches if matches else None
+
+
+def extract_child(elem: ET.Element, name: str) -> Optional[ET.Element]:
+    return elem.find(name)
+
+
+def extract_element_text(elem: ET.Element) -> Optional[str]:
+    return elem.text
+
+
+def extract_attribute(elem: ET.Element, name: str) -> Optional[str]:
+    return AttrNode(text=elem.attrib.get(name))
+
+
+class AttrNode(NamedTuple):
+    text: Optional[str]
+
+
+def to_int(value: str) -> int:
+    """Convert an SVD integer string to an int"""
+    if value.startswith("0x"):
+        return int(value, base=16)
+    if value.startswith("#"):
+        return int(value[1:], base=2)
+    return int(value)
+
+
+def to_bool(value: str) -> bool:
+    """Convert an SVD boolean string to a bool"""
+    if value in ("true", "1"):
+        return True
+    if value in ("false", "0"):
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
+R = TypeVar("R")
+
+
+def _convert_element(elem, result_type: type, simple_only: bool = False):
+    if result_type is type(None):
+        return None
+    if result_type is int:
+        return to_int(elem.text)
+    if result_type is bool:
+        return to_bool(elem.text)
+    if result_type is str:
+        return elem.text
+    if hasattr(result_type, "from_str"):
+        return result_type.from_str(elem.text)
+    if not simple_only:
+        return _parse_object(result_type, elem)
+    raise NotImplementedError(f"Conversion not implemented for type {result_type}")
+
+
+def from_xml(cls, elem: ET.Element):
+    svd_fields = {}
+    for name, extract in cls._svd_extractors.items():
+        if (value := extract(elem)) is not None:
+            svd_fields[name] = value
+    return cls(**svd_fields)
+
+
+class TypeNode(NamedTuple):
+    value: type
+    children: List[TypeNode]
+
+
+def normalize_type_tree(base):
+    origin = typing.get_origin(base)
+    if origin is None:
+        return TypeNode(base, [])
+    children = [normalize_type_tree(t) for t in typing.get_args(base)]
+    return TypeNode(origin, children)
+
+
+def extract_list(elem, field_name: str, field_type: type):
+    children = extract_children(elem, field_name)
+    if not children:
+        return None
+    return [_convert_element(c, field_type)  for c in children]
+
+
+def extract_base(elem, field_name: str, field_type: type, extractor):
+    child = extractor(elem, field_name)
+    if child is None:
+        return None
+    return _convert_element(child, field_type)
+
+
+def _parse_object(cls, elem: ET.Element):
+    field_values = {}
+    type_hints = typing.get_type_hints(cls)
+
+    for field in dc.fields(cls):
+        field_spec: Optional[Spec] = field.metadata.get("spec")
+        if field_spec is None:
+            continue
+
+        if field_spec.path == "derivedFrom":
+            # TODO: handling
+            continue
+
+        type_tree = normalize_type_tree(type_hints[field.name])
+
+        # TODO: DRY
+        if field_spec.source is Source.ELEM:
+            if type_tree.value is list:
+                parsed_object = extract_list(
+                    elem, field_spec.path, type_tree.children[0].value
+                )
+            if type_tree.value is Union:
+                for union_type in type_tree.children:
+                    try:
+                        parsed_object = extract_base(
+                            elem,
+                            field_spec.path,
+                            union_type.value,
+                            extractor=extract_child,
+                        )
+                    except Exception as e:
+                        print(e)
+                        continue
+            else:
+                parsed_object = extract_base(
+                    elem, field_spec.path, type_tree.value, extractor=extract_child
+                )
+        elif field_spec.source is Source.ATTR:
+            if type_tree.value is Union:
+                for union_type in type_tree.children:
+                    try:
+                        parsed_object = extract_base(
+                            elem,
+                            field_spec.path,
+                            union_type.value,
+                            extractor=extract_attribute,
+                        )
+                    except Exception as e:
+                        print(e)
+                        continue
+            else:
+                parsed_object = extract_base(
+                    elem, field_spec.path, type_tree.value, extractor=extract_attribute
+                )
+        else:
+            raise ValueError("Invalid source")
+
+        field_values[field.name] = parsed_object
+
+    return cls(**field_values)
+
+
 
 
 class CaseInsensitiveStrEnum(enum.Enum):
@@ -25,7 +218,8 @@ class CaseInsensitiveStrEnum(enum.Enum):
             if member.value.lower() == value_lower:
                 return member
         raise ValueError(
-            f"Class {cls.__qualname__} has no member corresponding to '{value}'")
+            f"Class {cls.__qualname__} has no member corresponding to '{value}'"
+        )
 
 
 @enum.unique
@@ -73,7 +267,9 @@ class BitRangeOffsetWidthStyle:
     bit_width: int = elem("bitWidth")
 
     def to_lsb_msb(self) -> BitRangeLsbMsbStyle:
-        return BitRangeLsbMsbStyle(lsb=self.bit_offset, msb=self.bit_offset + self.bit_width - 1)
+        return BitRangeLsbMsbStyle(
+            lsb=self.bit_offset, msb=self.bit_offset + self.bit_width - 1
+        )
 
 
 @sdataclass(frozen=True)
@@ -126,10 +322,8 @@ class WriteConstraint:
     """Write constraint for a register"""
 
     write_as_read: Optional[bool] = elem("writeAsRead", default=None)
-    use_enumerated_values: Optional[bool] = elem(
-        "useEnumeratedValues", default=None)
-    range_write_constraint: Optional[RangeWriteConstraint] = elem(
-        "range", default=None)
+    use_enumerated_values: Optional[bool] = elem("useEnumeratedValues", default=None)
+    range_write_constraint: Optional[RangeWriteConstraint] = elem("range", default=None)
 
     def __post_init__(self):
         if sum(1 for v in dc.astuple(self) if v is not None) != 1:
@@ -158,10 +352,8 @@ class Field:
     derived_from: Optional[Field] = attr("derivedFrom", default=None)
     description: Optional[str] = elem("description", default=None)
     access: Optional[Access] = elem("access", default=None)
-    modified_write_values: Optional[str] = elem(
-        "modifiedWriteValues", default=None)
-    write_constraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", default=None)
+    modified_write_values: Optional[str] = elem("modifiedWriteValues", default=None)
+    write_constraint: Optional[WriteConstraint] = elem("writeConstraint", default=None)
     read_action: Optional[ReadAction] = elem("readAction", default=None)
 
 
@@ -190,12 +382,12 @@ class EnumeratedValues:
     """Container for relevant fields in a SVD enumeratedValues node"""
 
     name: str = elem("name")
-    derived_from: Optional[EnumeratedValues] = attr(
-        "derivedFrom", default=None)
+    derived_from: Optional[EnumeratedValues] = attr("derivedFrom", default=None)
     enumerated_value: List[EnumeratedValue] = elem(
-        "enumeratedValue", default_factory=list)
+        "enumeratedValue", default_factory=list
+    )
     header_enum_name: Optional[str] = elem("headerEnumName", default=None)
-    usage: EnumUsage = elem("usage", deafult=EnumUsage.READ_WRITE)
+    usage: EnumUsage = elem("usage", default=EnumUsage.READ_WRITE)
 
 
 @enum.unique
@@ -242,21 +434,18 @@ class Register:
     display_name: Optional[str] = elem("displayName", default=None)
     description: Optional[str] = elem("description", default=None)
     alternate_group: Optional[str] = elem("alternateGroup", default=None)
-    alternate_register: Optional[Register] = elem(
-        "alternateRegister", default=None)
+    alternate_register: Optional[Register] = elem("alternateRegister", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     address_offset: int = elem("addressOffset", default=0)
     data_type: Optional[str] = elem("dataType", default=None)
-    modified_write_values: Optional[str] = elem(
-        "modifiedWriteValues", default=None)
-    write_constraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", default=None)
+    modified_write_values: Optional[str] = elem("modifiedWriteValues", default=None)
+    write_constraint: Optional[WriteConstraint] = elem("writeConstraint", default=None)
     fields: List[Field] = elem("fields/field", default_factory=list)
 
     def __post_init__(self):
         pass
-        #assert self.dim.is_valid()
-        #assert self.reg.is_valid()
+        # assert self.dim.is_valid()
+        # assert self.reg.is_valid()
 
 
 @sdataclass(frozen=True)
@@ -268,8 +457,7 @@ class Cluster:
     reg: RegisterPropertiesGroup = elem(".")
     derived_from: Optional[Cluster] = attr("derivedFrom", default=None)
     description: Optional[str] = elem("description", default=None)
-    alternate_cluster: Optional[Cluster] = elem(
-        "alternateCluster", default=None)
+    alternate_cluster: Optional[Cluster] = elem("alternateCluster", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     address_offset: int = elem("addressOffset", default=0)
 
@@ -293,19 +481,20 @@ class Peripheral:
     dim: DimElementGroup = elem(".")
     reg: RegisterPropertiesGroup = elem(".")
     registers: List[Union[Cluster, Register]] = elem(
-        "registers//", default_factory=list)
+        "registers//", default_factory=list
+    )
     derived_from: Optional[Peripheral] = attr("derivedFrom", default=None)
     version: Optional[str] = elem("version", default=None)
     description: Optional[str] = elem("description", default=None)
     alternate_peripheral: Optional[Peripheral] = elem(
-        "alternatePeripheral", default=None)
+        "alternatePeripheral", default=None
+    )
     group_name: Optional[str] = elem("groupName", default=None)
     prepend_to_name: Optional[str] = elem("prependToName", default=None)
     append_to_name: Optional[str] = elem("appendToName", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     disable_condition: Optional[str] = elem("disableCondition", default=None)
-    address_block: List[AddressBlock] = elem(
-        "addressBlock", default_factory=list)
+    address_block: List[AddressBlock] = elem("addressBlock", default_factory=list)
     interrupt: List[Interrupt] = elem("interrupt", default_factory=list)
 
 
@@ -336,7 +525,8 @@ class SauRegion:
 class SauRegionsConfig:
     enabled: bool = attr("enabled", default=True)
     protection_when_disabled: Optional[Protection] = attr(
-        "protectionWhenDisabled", default=None)
+        "protectionWhenDisabled", default=None
+    )
     regions: List[SauRegion] = elem("region", default_factory=list)
 
 
@@ -355,11 +545,11 @@ class Cpu:
     itcm_present: bool = elem("ictmPresent", default=False)
     dtcm_present: bool = elem("dctmPresent", default=False)
     vtor_present: bool = elem("vtorPresent", default=True)
-    device_num_interrupts: Optional[int] = elem(
-        "deviceNumInterrupts", default=None)
+    device_num_interrupts: Optional[int] = elem("deviceNumInterrupts", default=None)
     sau_num_regions: Optional[int] = elem("sauNumRegions", default=None)
     sau_regions_config: Optional[SauRegionsConfig] = elem(
-        "sauRegionsConfig", default=None)
+        "sauRegionsConfig", default=None
+    )
 
 
 @sdataclass(frozen=True)
@@ -373,179 +563,15 @@ class Device:
     series: Optional[str] = elem("series", default=None)
     description: Optional[str] = elem("description", default=None)
     cpu: Optional[Cpu] = elem("cpu", default=None)
-    header_system_filename: Optional[str] = elem(
-        "headerSystemName", default=None)
+    header_system_filename: Optional[str] = elem("headerSystemName", default=None)
     header_definitions_prefix: Optional[str] = elem(
-        "headerDefinitionsPrefix", default=None)
+        "headerDefinitionsPrefix", default=None
+    )
     address_unit_bits: int = elem("addressUnitBits", default=8)
     width: int = elem("width", default=32)
     # TODO
     # vendor_extensions: List[ET.Element] = xml_field(
     #     path="./vendorExtensions//*", default_factory=list)
-
-
-@enum.unique
-class Source(enum.Enum):
-    ATTR = enum.auto()
-    ELEM = enum.auto()
-
-
-class Spec(NamedTuple):
-    source: Source
-    path: str
-
-
-def sdataclass(*args, **kwargs):
-    return dc.dataclass(*args, **kwargs)
-
-
-def sfield(_source: Source, _path: str, /, *args, **kwargs):
-    spec = Spec(source=_source, path=_path)
-    return dc.field(*args, **kwargs, metadata={"spec": spec})
-
-
-def elem(_path: str, /, *args, **kwargs):
-    return sfield(Source.ELEM, _path, *args, **kwargs)
-
-
-def attr(_path: str, /, *args, **kwargs):
-    return sfield(Source.ATTR, _path, *args, **kwargs)
-
-
-def extract_children(elem: ET.Element, name: str) -> Optional[List[ET.Element]]:
-    matches = elem.findall(name)
-    return matches if matches else None
-
-
-def extract_child(elem: ET.Element, name: str) -> Optional[ET.Element]:
-    return elem.find(name)
-
-
-def extract_element_text(elem: ET.Element) -> Optional[str]:
-    return elem.text
-
-
-def extract_attribute(elem: ET.Element, name: str) -> Optional[str]:
-    return AttrNode(text=elem.attrib.get(name))
-
-class AttrNode(NamedTuple):
-    text: Optional[str]
-
-def to_int(value: str) -> int:
-    """Convert an SVD integer string to an int"""
-    if value.startswith("0x"):
-        return int(value, base=16)
-    if value.startswith("#"):
-        return int(value[1:], base=2)
-    return int(value)
-
-
-def to_bool(value: str) -> bool:
-    """Convert an SVD boolean string to a bool"""
-    if value in ("true", "1"):
-        return True
-    if value in ("false", "0"):
-        return False
-    raise ValueError(f"Invalid boolean value: {value}")
-
-
-R = TypeVar("R")
-
-def make_element_converter(result_type: type, simple_only: bool = False):
-    if result_type is int:
-        return lambda e: to_int(e.text)
-    if result_type is bool:
-        return lambda e: to_bool(e.text)
-    if result_type is str:
-        return lambda e: e.text
-    if hasattr(result_type, "from_str"):
-        return lambda e: result_type.from_str(e.text)
-    if not simple_only and hasattr(result_type, "_svd_extractors"):
-        return result_type.from_xml
-    raise NotImplementedError(
-        f"Conversion not implemented for type {result_type}")
-
-
-def from_xml(cls, elem: ET.Element):
-    svd_fields = {}
-    for name, extract in cls._svd_extractors.items():
-        if (value := extract(elem)) is not None:
-            svd_fields[name] = value
-    return cls(**svd_fields)
-
-
-class TypeNode(NamedTuple):
-    value: type
-    children: List[TypeNode]
-
-
-def normalize_type_tree(base):
-    origin = typing.get_origin(base)
-    if origin is None:
-        return TypeNode(base, [])
-    children = [normalize_type_tree(t) for t in typing.get_args(base)]
-    return TypeNode(origin, children)
-
-
-def extract_list(elem, field_name: str, converter):
-    children = extract_children(elem, field_name)
-    if not children:
-        return None
-    return [converter(c) for c in children]
-
-
-def extract_base(elem, field_name: str, extractor, converter):
-    child = extractor(elem, field_name)
-    if child is None:
-        return None
-    return converter(child)
-
-
-def make_extractor_elem(type_tree: TypeNode, field_name: str) -> ExtractFunction:
-    if type_tree.value is list:
-        type_tree = type_tree.children[0]
-        extractor = ft.partial(extract_list, field_name=field_name)
-    else:
-        if type_tree.value is Union and type_tree.children[1].value is type(None):
-            type_tree = type_tree.children[0]
-        extractor = ft.partial(
-            extract_base, field_name=field_name, extractor=extract_child)
-
-    converter = make_element_converter(type_tree.value)
-    extractor.keywords["converter"] = converter
-    return extractor
-
-
-def make_extractor_attr(type_tree: TypeNode, field_name: str) -> ExtractFunction:
-    if type_tree.value is Union and type_tree.children[1].value is type(None):
-        type_tree = type_tree.children[0]
-    extractor = ft.partial(
-        extract_base, field_name=field_name, extractor=extract_attribute)
-
-    converter = make_element_converter(type_tree.value, simple_only=True)
-    extractor.keywords["converter"] = converter
-    return extractor
-
-
-def _parse_object(cls, elem: ET.Element):
-    type_hints = typing.get_type_hints(cls)
-
-    for field in dc.fields(cls):
-        field_spec: Optional[Spec] = field.metadata.get("spec")
-        if field_spec is None:
-            continue
-
-        type_tree = normalize_type_tree(type_hints[field.name])
-
-        if field_spec.source == Source.ELEM:
-            pass
-
-        elif field.spec.source == Source.ATTR:
-            pass
-
-        else:
-            raise ValueError("Invalid source")
-
 
 def parse_device(root: ET.Element):
     inherit: Dict[Tuple[type, str], Set[str]] = {}
@@ -553,7 +579,7 @@ def parse_device(root: ET.Element):
     # TODO: inheritance
     return device
 
-    
+
 def main():
     import argparse
     from pathlib import Path
@@ -565,7 +591,7 @@ def main():
     with open(args.svd_file, "r") as f:
         root = ET.parse(f).getroot()
 
-    device = Device.from_xml(root)
+    device = parse_device(root)
     print(device)
 
 
