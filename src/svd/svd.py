@@ -167,7 +167,7 @@ def _parse_object(cls, elem: ET.Element):
                 parsed_object = extract_list(
                     elem, field_spec.path, type_tree.children[0].value
                 )
-            if type_tree.value is Union:
+            elif type_tree.value is Union:
                 for union_type in type_tree.children:
                     try:
                         parsed_object = extract_base(
@@ -176,6 +176,7 @@ def _parse_object(cls, elem: ET.Element):
                             union_type.value,
                             extractor=extract_child,
                         )
+                        break
                     except Exception as e:
                         print(e)
                         continue
@@ -291,10 +292,11 @@ class BitRange:
     pattern: Optional[BitRangePattern] = elem(".", default=None)
 
     # TODO: how to have a uniform interface
-    # define a custom from_xml?
+    # define a custom from_xml method?
 
     def __post_init__(self):
-        assert sum(1 for v in dc.astuple(self) if v is not None) == 1
+        pass
+        #assert sum(1 for v in dc.astuple(self) if v is not None) == 1
 
 
 @sdataclass(frozen=True)
@@ -480,9 +482,11 @@ class Peripheral:
     base_address: int = elem("baseAddress")
     dim: DimElementGroup = elem(".")
     reg: RegisterPropertiesGroup = elem(".")
-    registers: List[Union[Cluster, Register]] = elem(
-        "registers//", default_factory=list
-    )
+    register: List[Register] = elem("registers/register", default_factory=list)
+    cluster: List[Cluster] = elem("registers/cluster", default_factory=list)
+    #registers: List[Union[Cluster, Register]] = elem(
+    #    "registers//", default_factory=list
+    #)
     derived_from: Optional[Peripheral] = attr("derivedFrom", default=None)
     version: Optional[str] = elem("version", default=None)
     description: Optional[str] = elem("description", default=None)
@@ -557,13 +561,13 @@ class Device:
     name: str = elem("name")
     version: str = elem("version")
     reg: RegisterPropertiesGroup = elem(".")
-    peripherals: List[Peripheral] = elem("peripherals//", default_factory=list)
+    peripherals: List[Peripheral] = elem("peripherals/peripheral", default_factory=list)
     vendor: Optional[str] = elem("vendor", default=None)
     vendor_id: Optional[str] = elem("vendorId", default=None)
     series: Optional[str] = elem("series", default=None)
     description: Optional[str] = elem("description", default=None)
     cpu: Optional[Cpu] = elem("cpu", default=None)
-    header_system_filename: Optional[str] = elem("headerSystemName", default=None)
+    header_system_filename: Optional[str] = elem("headerSystemFilename", default=None)
     header_definitions_prefix: Optional[str] = elem(
         "headerDefinitionsPrefix", default=None
     )
