@@ -614,12 +614,13 @@ def parse_device(root: ET.Element):
     return device
 
 
-class MyLookup(ET.CustomElementClassLookup):
-    def lookup(self, node_type, document, namespace, name):
-        if node_type == 'element':
-            return None
-        else:
-            return None  # pass on to (default) fallback
+class MyLookup(ET.PythonElementClassLookup):
+    def lookup(self, document, element):
+        return None
+
+# Big dict of (parent.tag, current.tag) -> current_type
+# (just for element classes)
+# data classes are defined by properties 
 
 
 def main():
@@ -638,7 +639,8 @@ def main():
 
     print(objectify.dump(schema_tree.getroot()))
 
-    parser = objectify.makeparser(schema=schema)
+    parser = objectify.makeparser()
+    parser.set_element_class_lookup(MyLookup())
 
     with open(args.svd_file, "r") as f:
         obj = objectify.parse(f, parser=parser)
