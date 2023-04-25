@@ -29,6 +29,8 @@ from typing import (
 
 from lxml import objectify
 
+_ELEMENT_TAGS: Dict[str, type] = {}
+
 
 class Source(enum.Enum):
     ATTR = enum.auto()
@@ -42,6 +44,15 @@ class Spec(NamedTuple):
 
 def sdataclass(*args, **kwargs):
     return dc.dataclass(*args, **kwargs)
+
+
+def elem_class(_tag: str):
+    def decorator(cls):
+        global _ELEMENT_TAGS
+        _ELEMENT_TAGS[_tag] = cls
+        return cls
+
+    return decorator
 
 
 def sfield(_source: Source, _path: str, /, *args, **kwargs):
@@ -114,8 +125,7 @@ def _convert_element(elem, result_type: type, simple_only: bool = False):
         return result_type.from_element(elem)
     if not simple_only:
         return _parse_object(result_type, elem)
-    raise NotImplementedError(
-        f"Conversion not implemented for type {result_type}")
+    raise NotImplementedError(f"Conversion not implemented for type {result_type}")
 
 
 def from_xml(cls, elem: ET.Element):
@@ -245,9 +255,15 @@ class ReadAction(CaseInsensitiveStrEnum):
     MODIFY_EXTERNAL = "modifyExternal"
 
 
-@sdataclass(frozen=True)
 class RegisterPropertiesGroup:
     """Container for SVD registerPropertiesGroup properties"""
+
+    def __init__(self, element: ET.Element):
+        self._element = element
+
+    @ft.cached_property
+    def size(self) -> Optional[int]:
+        return to_int(self._element.findtext("size"))
 
     size: Optional[int] = elem("size", default=None)
     access: Optional[Access] = elem("access", default=None)
@@ -293,6 +309,7 @@ class BitRangePattern:
 
 class BitRange:
     """Container for SVD bitRange properties"""
+
     @property
     def lsb(self) -> int:
         return self._lsb
@@ -342,10 +359,8 @@ class WriteConstraint:
     """Write constraint for a register"""
 
     write_as_read: Optional[bool] = elem("writeAsRead", default=None)
-    use_enumerated_values: Optional[bool] = elem(
-        "useEnumeratedValues", default=None)
-    range_write_constraint: Optional[RangeWriteConstraint] = elem(
-        "range", default=None)
+    use_enumerated_values: Optional[bool] = elem("useEnumeratedValues", default=None)
+    range_write_constraint: Optional[RangeWriteConstraint] = elem("range", default=None)
 
     def __post_init__(self):
         if sum(1 for v in dc.astuple(self) if v is not None) != 1:
@@ -374,10 +389,8 @@ class Field:
     derived_from: Optional[Field] = attr("derivedFrom", default=None)
     description: Optional[str] = elem("description", default=None)
     access: Optional[Access] = elem("access", default=None)
-    modified_write_values: Optional[str] = elem(
-        "modifiedWriteValues", default=None)
-    write_constraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", default=None)
+    modified_write_values: Optional[ModifiedWriteValues] = elem("modifiedWriteValues", default=None)
+    write_constraint: Optional[WriteConstraint] = elem("writeConstraint", default=None)
     read_action: Optional[ReadAction] = elem("readAction", default=None)
 
 
@@ -406,8 +419,7 @@ class EnumeratedValues:
     """Container for relevant fields in a SVD enumeratedValues node"""
 
     name: str = elem("name")
-    derived_from: Optional[EnumeratedValues] = attr(
-        "derivedFrom", default=None)
+    derived_from: Optional[EnumeratedValues] = attr("derivedFrom", default=None)
     enumerated_value: List[EnumeratedValue] = elem(
         "enumeratedValue", default_factory=list
     )
@@ -459,15 +471,12 @@ class Register:
     display_name: Optional[str] = elem("displayName", default=None)
     description: Optional[str] = elem("description", default=None)
     alternate_group: Optional[str] = elem("alternateGroup", default=None)
-    alternate_register: Optional[Register] = elem(
-        "alternateRegister", default=None)
+    alternate_register: Optional[Register] = elem("alternateRegister", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     address_offset: int = elem("addressOffset", default=0)
     data_type: Optional[str] = elem("dataType", default=None)
-    modified_write_values: Optional[str] = elem(
-        "modifiedWriteValues", default=None)
-    write_constraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", default=None)
+    modified_write_values: Optional[ModifiedWriteValues] = elem("modifiedWriteValues", default=None)
+    write_constraint: Optional[WriteConstraint] = elem("writeConstraint", default=None)
     fields: List[Field] = elem("fields/field", default_factory=list)
 
     def __post_init__(self):
@@ -485,8 +494,7 @@ class Cluster:
     reg: RegisterPropertiesGroup = elem(".")
     derived_from: Optional[Cluster] = attr("derivedFrom", default=None)
     description: Optional[str] = elem("description", default=None)
-    alternate_cluster: Optional[Cluster] = elem(
-        "alternateCluster", default=None)
+    alternate_cluster: Optional[Cluster] = elem("alternateCluster", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     address_offset: int = elem("addressOffset", default=0)
 
@@ -525,8 +533,7 @@ class Peripheral:
     append_to_name: Optional[str] = elem("appendToName", default=None)
     header_struct_name: Optional[str] = elem("headerStructName", default=None)
     disable_condition: Optional[str] = elem("disableCondition", default=None)
-    address_block: List[AddressBlock] = elem(
-        "addressBlock", default_factory=list)
+    address_block: List[AddressBlock] = elem("addressBlock", default_factory=list)
     interrupt: List[Interrupt] = elem("interrupt", default_factory=list)
 
 
@@ -564,31 +571,35 @@ class SauRegionsConfig:
 
 @sdataclass(frozen=True)
 class Cpu:
-    name: str = elem("name")
-    revision: str = elem("revision")
-    endian: EndianType = elem("endian")
-    mpu_present: bool = elem("mpuPresent")
-    fpu_present: bool = elem("fpuPresent")
-    nvic_prio_bits: int = elem("nvicPrioBits")
-    vendor_systick_config: bool = elem("vendorSystickConfig")
-    fpu_dp: bool = elem("fpuDP", default=False)
-    icache_present: bool = elem("icachePresent", default=False)
-    dcache_present: bool = elem("dcachePresent", default=False)
-    itcm_present: bool = elem("ictmPresent", default=False)
-    dtcm_present: bool = elem("dctmPresent", default=False)
-    vtor_present: bool = elem("vtorPresent", default=True)
-    device_num_interrupts: Optional[int] = elem(
-        "deviceNumInterrupts", default=None)
-    sau_num_regions: Optional[int] = elem("sauNumRegions", default=None)
+    # name: str = elem("name")
+    # revision: str = elem("revision")
+    # endian: EndianType = elem("endian")
+    # mpu_present: bool = elem("mpuPresent")
+    # fpu_present: bool = elem("fpuPresent")
+    # nvic_prio_bits: int = elem("nvicPrioBits")
+    # vendor_systick_config: bool = elem("vendorSystickConfig")
+    # fpu_dp: bool = elem("fpuDP", default=False)
+    # icache_present: bool = elem("icachePresent", default=False)
+    # dcache_present: bool = elem("dcachePresent", default=False)
+    # itcm_present: bool = elem("ictmPresent", default=False)
+    # dtcm_present: bool = elem("dctmPresent", default=False)
+    # vtor_present: bool = elem("vtorPresent", default=True)
+    # device_num_interrupts: Optional[int] = elem(
+    #    "deviceNumInterrupts", default=None)
+    # sau_num_regions: Optional[int] = elem("sauNumRegions", default=None)
     sau_regions_config: Optional[SauRegionsConfig] = elem(
         "sauRegionsConfig", default=None
     )
 
+@elem_class("peripherals")
+class Peripherals(ET.ElementBase):
+    pass
 
-@sdataclass(frozen=True)
-class Device:
+
+
+class Device(ET.ElementBase):
     name: str = elem("name")
-    # version: str = elem("version")
+    version: str = elem("version")
     # reg: RegisterPropertiesGroup = elem(".")
     # peripherals: List[Peripheral] = elem("peripherals/peripheral", default_factory=list)
     # vendor: Optional[str] = elem("vendor", default=None)
@@ -616,11 +627,18 @@ def parse_device(root: ET.Element):
 
 class MyLookup(ET.PythonElementClassLookup):
     def lookup(self, document, element):
+        # print("lookup", element.tag)
         return None
+        #return _ELEMENT_TAGS.get(element.tag)
+
+
+lookup = ET.ElementNamespaceClassLookup()
+namespace = lookup.get_namespace(None)
+
 
 # Big dict of (parent.tag, current.tag) -> current_type
 # (just for element classes)
-# data classes are defined by properties 
+# data classes are defined by properties
 
 
 def main():
@@ -629,15 +647,7 @@ def main():
 
     p = argparse.ArgumentParser()
     p.add_argument("svd_file", type=Path)
-    p.add_argument("schema_file", type=Path)
     args = p.parse_args()
-
-    with open(args.schema_file, "r") as f:
-        parser = ET.XMLParser(remove_blank_text=True, remove_comments=True)
-        schema_tree = ET.parse(args.schema_file, parser=parser)
-        schema = ET.XMLSchema(etree=schema_tree)
-
-    print(objectify.dump(schema_tree.getroot()))
 
     parser = objectify.makeparser()
     parser.set_element_class_lookup(MyLookup())
@@ -646,9 +656,10 @@ def main():
         obj = objectify.parse(f, parser=parser)
         # obj = ET.parse(args.svd_file)
 
-#    result = schema.validate(obj)
+    #    result = schema.validate(obj)
 
-    print(objectify.dump(obj.getroot()))
+    nodes = list(obj.getroot().iter())
+    #print(objectify.dump(obj.getroot()))
 
     """
     with open(args.svd_file, "r") as f:
