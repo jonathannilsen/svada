@@ -12,18 +12,20 @@ from __future__ import annotations
 
 from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional
 from pprint import pformat
-import xml.etree.ElementTree as ET
+import lxml.etree as ET
 
+from . import bindings
 from . import util
+from .svd_enums import *
 
 
 _COMMON_PREFIXES = ["global"]
 _COMMON_SUFFIXES = ["ns", "s"]
 
 
-def _simplify_peripheral_name(peripheral_name: str) -> str:
+def _simplify_name(name: str) -> str:
     return util.strip_prefixes_suffixes(
-        peripheral_name.lower(), _COMMON_PREFIXES, _COMMON_SUFFIXES
+        name.lower(), _COMMON_PREFIXES, _COMMON_SUFFIXES
     )
 
 
@@ -36,14 +38,28 @@ def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element
     :param device: ElementTree element for the device definition in the SVD file.
     :param peripheral_name: Name of the peripheral to instantiate. Example "uicr".
     """
-    peripheral_name = _simplify_peripheral_name(peripheral_name)
+    peripheral_name = _simplify_name(peripheral_name)
 
     for peripheral in device.findall("peripherals/peripheral"):
-        name = _simplify_peripheral_name(peripheral.findtext("name").lower())
+        name = _simplify_name(peripheral.findtext("name").lower())
         if name == peripheral_name:
             return peripheral
 
-    raise LookupError(f"Peripheral '{peripheral_name}' was not found in the device SVD")
+    raise LookupError(
+        f"Peripheral '{peripheral_name}' was not found in the device SVD")
+
+
+class Device:
+    def __init__(self, device: bindings.DeviceElement):
+        self._device = device
+        self._peripherals = {}
+        for peripheral_element in device.peripherals:
+            peripheral = Peripheral(peripheral_element)
+            self._peripherals[peripheral.name] = peripheral
+
+    @property
+    def peripherals(self) -> Dict[str, Peripheral]:
+        return self._peripherals
 
 
 class Peripheral:
@@ -56,38 +72,18 @@ class Peripheral:
     the SVD.
     """
 
-    def __init__(self, peripheral: ET.Element, base_address: int = None):
+    def __init__(self, peripheral: bindings.PeripheralElement, base_address: int = None):
         """
         Initialize the class attribute(s).
 
         :param peripheral_node: ElementTree element for the peripheral node in the device SVD file.
         :param base_address: Specific base address to use for the peripheral.
         """
+        self._name: str = _simplify_name(peripheral.name.pyval)
+        self._base_address: int = peripheral.baseAddress.pyval if base_address is None else base_address
 
-        peripheral_name = peripheral.findtext("name")
-        if peripheral_name is None:
-            raise LookupError("Peripheral node is missing a 'name' property")
-
-        registers = peripheral.find("registers")
-        base_address = (
-            base_address
-            if base_address is not None
-            else util.to_int(peripheral.findtext("baseAddress"))
-        )
-
-        if base_address is None or registers is None:
-            raise LookupError(
-                f"Peripheral '{peripheral_name}' does not contain required properties 'baseAddress'"
-                "and 'registers'"
-            )
-
-        self._name: str = peripheral_name
-        self._base_address: int = base_address
-        self._header_struct_name: Optional[str] = peripheral.findtext(
-            "headerStructName"
-        )
-
-        self._memory_map: Dict[int, Register] = get_memory_map(registers, base_address)
+        self._memory_map: Dict[int, Register] = get_memory_map(
+            peripheral.registers, base_address)
 
         self._instance_map: Dict[str, int] = {
             register.name: address for address, register in self._memory_map.items()
@@ -97,16 +93,6 @@ class Peripheral:
     def name(self) -> str:
         """Simplified name of the peripheral."""
         return self._name
-
-    @property
-    def full_name(self) -> str:
-        """Full name of the peripheral as given in the SVD file."""
-        return self._full_name
-
-    @property
-    def header_struct_name(self) -> Optional[str]:
-        """Name of the header struct for the peripheral"""
-        return self._header_struct_name
 
     @property
     def memory_map(self) -> Dict[int, Register]:
@@ -141,7 +127,8 @@ class Peripheral:
             return self._memory_map[key]
 
         if key not in self._instance_map:
-            raise LookupError(f"Peripheral does not contain a register named '{key}'")
+            raise LookupError(
+                f"Peripheral does not contain a register named '{key}'")
 
         return self._memory_map[self._instance_map[key]]
 
@@ -183,7 +170,8 @@ class Peripheral:
             )
 
         affected_register = next(
-            (r for r in self._memory_map.values() if r.name == register_field[0]), None
+            (r for r in self._memory_map.values()
+             if r.name == register_field[0]), None
         )
 
         if affected_register is None:
@@ -198,7 +186,8 @@ class Peripheral:
             else lambda _: True
         )
 
-        affected_fields = list(filter(field_match, affected_register.field_iter()))
+        affected_fields = list(
+            filter(field_match, affected_register.field_iter()))
 
         if not any(affected_fields):
             raise ValueError(
@@ -243,7 +232,7 @@ class Register:
             field.set_parent(self)
 
     @classmethod
-    def from_element(cls, element: ET.Element, name: str, reset_value: int) -> Register:
+    def from_element(cls, element: bindings.RegisterElement, name: str, reset_value: int) -> Register:
         """
         Construct a Register class from an SVD element.
 
@@ -254,7 +243,7 @@ class Register:
 
         fields = {
             field.bit_offset: field
-            for field_element in element.findall("fields/field")
+            for field_element in element.fields
             for field in [Field.from_element(field_element, reset_value)]
         }
 
@@ -413,7 +402,7 @@ class Field:
         return cls("", 0, 32, default_register_value, {}, range(2**32))
 
     @classmethod
-    def from_element(cls, element: ET.Element, default_register_value: int) -> Field:
+    def from_element(cls, element: bindings.FieldElement, default_register_value: int) -> Field:
         """
         Construct a Field class from an SVD element.
 
@@ -422,7 +411,7 @@ class Field:
         :param reset_value: Reset value of field.
         """
 
-        name = element.find("name").text
+        name = element.name.pyval
         bit_offset, bit_width = get_bit_range(element)
 
         bit_mask = 2**bit_width - 1
@@ -431,8 +420,8 @@ class Field:
         # We do not support "do not care" bits, as by marking bits "x", see
         # SVD docs "/device/peripherals/peripheral/registers/.../enumeratedValue"
         enums = {
-            enum.find("name").text: util.to_int(enum.find("value").text)
-            for enum in element.findall("enumeratedValues/enumeratedValue")
+            enum.name.pyval: enum.value.pyval
+            for enum in element.enumerated_values
         }
 
         allowed_values = enums.values() if len(enums) != 0 else range(bit_mask + 1)
@@ -598,7 +587,7 @@ class Field:
         self._allowed_values = range(2**self._bit_width)
 
 
-def get_bit_range(field: ET.Element) -> Tuple[int, int]:
+def get_bit_range(field: bindings.FieldElement) -> Tuple[int, int]:
     """
     Get the bit range of a field.
 
@@ -607,22 +596,15 @@ def get_bit_range(field: ET.Element) -> Tuple[int, int]:
     :return: Tuple of the field's bit offset, and its bit width.
     """
 
-    if field.find("lsb") is not None:
-        lsb = util.to_int(field.find("lsb").text)
-        msb = util.to_int(field.find("msb").text)
-        return lsb, msb - lsb + 1
+    if hasattr(field, "lsb"):
+        return field.lsb.pyval, field.msb.pyval - field.lsb.pyval + 1
 
-    if field.find("bitOffset") is not None:
-        offset = util.to_int(field.find("bitOffset").text)
-        width = (
-            util.to_int(field.find("bitWidth").text)
-            if field.find("bitWidth") is not None
-            else 32
-        )
-        return offset, width
+    if hasattr(field, "bitOffset"):
+        width = field.width.pyval if hasattr(field, "bitWidth") else 32
+        return field.bitOffset.pyval, width
 
-    if field.find("bitRange") is not None:
-        msb_string, lsb_string = field.find("bitRange").text[1:-1].split(":")
+    if hasattr(field, "bitRange"):
+        msb_string, lsb_string = field.bitRange.pyval[1:-1].split(":")
         msb, lsb = util.to_int(msb_string), util.to_int(lsb_string)
         return (lsb, msb - lsb + 1)
 
@@ -630,7 +612,7 @@ def get_bit_range(field: ET.Element) -> Tuple[int, int]:
 
 
 def get_register_elements(
-    element: ET.Element,
+    element: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_address: int,
     prefix: str = "",
     reset_value: int = 0,
@@ -652,7 +634,8 @@ def get_register_elements(
 
     name = element.find("name").text if element.find("name") is not None else ""
     full_name = util.strip_prefixes_suffixes(
-        util.strip_prefixes_suffixes(prefix + "_" + name.lower(), [], ["[%s]"]),
+        util.strip_prefixes_suffixes(
+            prefix + "_" + name.lower(), [], ["[%s]"]),
         ["_"],
         ["_"],
     )
@@ -668,8 +651,6 @@ def get_register_elements(
         if element.find("addressOffset") is not None
         else 0
     )
-
-    header_struct_name = element.findtext("headerStructName")
 
     if name.endswith("[%s]"):
         array_length = util.to_int(element.find("dim").text)
@@ -692,7 +673,8 @@ def get_register_elements(
         }
 
     if len(children) == 0:
-        registers = {base_address: RegisterElement(element, full_name, reset_value)}
+        registers = {base_address: RegisterElement(
+            element, full_name, reset_value)}
 
     expanded_registers: Dict[int, RegisterElement] = {}
     for address, register_bundle in registers.items():
@@ -702,7 +684,7 @@ def get_register_elements(
     return expanded_registers
 
 
-def get_memory_map(element: ET.Element, base_address: int) -> Dict[int, Register]:
+def get_memory_map(element: bindings.RegistersElement, base_address: int) -> Dict[int, Register]:
     """
     Get the memory map of a peripheral unit given by an SVD element and its
     base address.

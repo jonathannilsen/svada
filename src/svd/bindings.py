@@ -1,82 +1,87 @@
+#
+# Copyright (c) 2023 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
-import typing
-
-import lxml.etree as ET
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
 
-from typing import Optional
+from . import svd_enums
 
-from svd_enums import Access, CpuName, DataType, ReadAction, EndianType, SauAccess, AddressBlockUsage, Protection, EnumUsage, ModifiedWriteValues
 
+# TODO: attributes
+# TODO: validation
+# TODO: assert that element class is found
 
 class AccessElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> Access:
-        return Access.from_str(self.text)
+    def pyval(self) -> svd_enums.Access:
+        return svd_enums.Access.from_str(self.text)
 
 
 class ReadActionElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> ReadAction:
-        return ReadAction.from_str(self.text)
+    def pyval(self) -> svd_enums.ReadAction:
+        return svd_enums.ReadAction.from_str(self.text)
 
 
 class EndianTypeElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> EndianType:
-        return EndianType.from_str(self.text)
+    def pyval(self) -> svd_enums.EndianType:
+        return svd_enums.EndianType.from_str(self.text)
 
 
 class SauAccessElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> SauAccess:
-        return SauAccess.from_str(self.text)
+    def pyval(self) -> svd_enums.SauAccess:
+        return svd_enums.SauAccess.from_str(self.text)
 
 
 class AddressBlockUsageElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> AddressBlockUsage:
-        return AddressBlockUsage.from_str(self.text)
+    def pyval(self) -> svd_enums.AddressBlockUsage:
+        return svd_enums.AddressBlockUsage.from_str(self.text)
 
 
 class ProtectionElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> Protection:
-        return Protection.from_str(self.text)
+    def pyval(self) -> svd_enums.Protection:
+        return svd_enums.Protection.from_str(self.text)
 
 
 class EnumUsageElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> EnumUsage:
-        return EnumUsage.from_str(self.text)
+    def pyval(self) -> svd_enums.EnumUsage:
+        return svd_enums.EnumUsage.from_str(self.text)
 
 
 class ModifiedWriteValuesElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> ModifiedWriteValues:
-        return ModifiedWriteValues.from_str(self.text)
+    def pyval(self) -> svd_enums.ModifiedWriteValues:
+        return svd_enums.ModifiedWriteValues.from_str(self.text)
 
 
 class DataTypeElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> DataType:
-        return DataType.from_str(self.text)
+    def pyval(self) -> svd_enums.DataType:
+        return svd_enums.DataType.from_str(self.text)
 
 
 class CpuNameElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> CpuName:
-        return CpuName.from_str(self.text)
+    def pyval(self) -> svd_enums.CpuName:
+        return svd_enums.CpuName.from_str(self.text)
 
 
 class SvdIntElement(objectify.IntElement):
     def _init(self):
-        self._setValueParser(self.to_int)
+        self._setValueParser(self._to_int)
 
     @staticmethod
-    def to_int(value: str) -> int:
+    def _to_int(value: str) -> int:
         """Convert an SVD integer string to an int"""
         if value.startswith("0x"):
             return int(value, base=16)
@@ -113,9 +118,6 @@ class SauRegionsConfigElement(objectify.ObjectifiedElement):
     TAG = "sauRegions"
 
     region: SauRegionElement
-
-
-# TODO: implement derivedFrom as a property that looks up the relevant element using xpath
 
 
 class CpuElement(objectify.ObjectifiedElement):
@@ -169,10 +171,6 @@ class PeripheralElement(objectify.ObjectifiedElement):
     dimArrayIndex: DimArrayIndexElement
 
     registers: RegistersElement
-
-    @property
-    def derivedFrom(self) -> Optional[PeripheralElement]:
-        ...
 
 
 class PeripheralsElement(objectify.ObjectifiedElement):
@@ -275,10 +273,6 @@ class FieldElement(objectify.ObjectifiedElement):
 
     enumeratedValues: EnumerationElement
 
-    @property
-    def derivedFrom(self) -> Optional[FieldElement]:
-        ...
-
 
 class FieldsElement(objectify.ObjectifiedElement):
     TAG = "fields"
@@ -315,10 +309,6 @@ class RegisterElement(objectify.ObjectifiedElement):
 
     fields: FieldsElement
 
-    @property
-    def derivedFrom(self) -> Optional[RegisterElement]:
-        ...
-
 
 class ClusterElement(objectify.ObjectifiedElement):
     TAG = "cluster"
@@ -344,10 +334,6 @@ class ClusterElement(objectify.ObjectifiedElement):
     register: RegisterElement
     cluster: ClusterElement
 
-    @property
-    def derivedFrom(self) -> Optional[ClusterElement]:
-        ...
-
 
 class RegistersElement(objectify.ObjectifiedElement):
     TAG = "registers"
@@ -356,63 +342,24 @@ class RegistersElement(objectify.ObjectifiedElement):
     register: RegisterElement
 
 
-class ParentChildTagLookup(ET.PythonElementClassLookup):
-    def lookup(self, _document, element: ET.Element):
-        if (parent := element.getparent()) is not None:
-            parent_tag = parent.tag
-        else:
-            parent_tag = None
-        result = _ELEMENT_CLASSES.get((parent_tag, element.tag))
-        # print("lookup", (parent_tag, element.tag), "->", result)
-        return result
-
-
-def _add_element_class(element_class: type):
-    element_class_tag = element_class.TAG
-    for field_name, field_type in typing.get_type_hints(element_class).items():
-        key = (element_class_tag, field_name)
-        if key in _ELEMENT_CLASSES:
-            print(f"Duplicate {key=}")
-        _ELEMENT_CLASSES[key] = field_type
-
-
-_ELEMENT_CLASSES = {
-    (None, "device"): DeviceElement
-}
-
-for element_class in [RangeWriteConstraintElement, WriteConstraintElement, SauRegionElement, SauRegionsConfigElement, CpuElement, PeripheralElement, PeripheralsElement, DeviceElement, DimArrayIndexElement, EnumerationElement, EnumeratedValueElement, AddressBlockElement, InterruptElement, FieldElement, FieldsElement, RegisterElement, RegistersElement, ClusterElement]:
-    _add_element_class(element_class)
-
-
-def main():
-    import argparse
-    from pathlib import Path
-
-    p = argparse.ArgumentParser()
-    p.add_argument("svd_file", type=Path)
-    args = p.parse_args()
-
-    parser = objectify.makeparser(remove_comments=True)
-    parser.set_element_class_lookup(ParentChildTagLookup())
-
-    with open(args.svd_file, "r") as f:
-        obj = objectify.parse(f, parser=parser)
-        # obj = ET.parse(args.svd_file)
-
-    #    result = schema.validate(obj)
-
-    nodes = list(obj.getroot().iter())
-    pass
-    print(objectify.dump(obj.getroot()))
-
-    """
-    with open(args.svd_file, "r") as f:
-        root = ET.parse(f).getroot()
-
-    device = parse_device(root)
-    print(device)
-    """
-
-
-if __name__ == "__main__":
-    main()
+ELEMENT_CLASSES = [
+    AddressBlockElement,
+    BitRangeElement,
+    ClusterElement,
+    CpuElement,
+    DeviceElement,
+    DimArrayIndexElement,
+    EnumerationElement,
+    EnumeratedValueElement,
+    FieldElement,
+    FieldsElement,
+    InterruptElement,
+    PeripheralElement,
+    PeripheralsElement,
+    RangeWriteConstraintElement,
+    RegisterElement,
+    RegistersElement,
+    SauRegionElement,
+    SauRegionsConfigElement,
+    WriteConstraintElement,
+]
