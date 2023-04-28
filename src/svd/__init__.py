@@ -6,6 +6,7 @@
 
 from .parsing import (
     parse_peripheral,
+    parse,
 )
 from .peripheral import (
     Peripheral,
@@ -13,7 +14,6 @@ from .peripheral import (
     Register,
     Field,
     get_memory_map,
-    get_bit_range,
     get_register_elements,
 )
 from .util import (

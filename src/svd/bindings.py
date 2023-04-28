@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
 
 from . import svd_enums
+from . import util
 
 
 # TODO: attributes
@@ -78,16 +81,7 @@ class CpuNameElement(objectify.ObjectifiedDataElement):
 
 class SvdIntElement(objectify.IntElement):
     def _init(self):
-        self._setValueParser(self._to_int)
-
-    @staticmethod
-    def _to_int(value: str) -> int:
-        """Convert an SVD integer string to an int"""
-        if value.startswith("0x"):
-            return int(value, base=16)
-        if value.startswith("#"):
-            return int(value[1:], base=2)
-        return int(value)
+        self._setValueParser(util.to_int)
 
 
 class RangeWriteConstraintElement(objectify.ObjectifiedElement):
@@ -172,6 +166,19 @@ class PeripheralElement(objectify.ObjectifiedElement):
 
     registers: RegistersElement
 
+    def find_derived_from(self) -> Optional[PeripheralElement]:
+        derived_from = self.get("derivedFrom")
+        if derived_from is None:
+            return None
+        peripherals = self.getparent()
+        base_peripheral = peripherals.xpath(f"//peripheral[name='{derived_from}']")
+        if not base_peripheral:
+            raise LookupError(f"Did not find a peripheral with name'{derived_from}'")
+        return base_peripheral[0]
+
+    def _init(self):
+        self.reverse_lookup = None
+
 
 class PeripheralsElement(objectify.ObjectifiedElement):
     TAG = "peripherals"
@@ -202,6 +209,9 @@ class DeviceElement(objectify.ObjectifiedElement):
     resetMask: SvdIntElement
 
     peripherals: PeripheralsElement
+
+    def _init(self):
+        self.reverse_lookup = None
 
 
 class DimArrayIndexElement(objectify.ObjectifiedElement):
@@ -272,6 +282,29 @@ class FieldElement(objectify.ObjectifiedElement):
     readAction: ReadActionElement
 
     enumeratedValues: EnumerationElement
+
+    def get_bit_range(self) -> Tuple[int, int]:
+        """
+        Get the bit range of a field.
+
+        :param field: ElementTree representation of an SVD Field.
+
+        :return: Tuple of the field's bit offset, and its bit width.
+        """
+
+        if hasattr(self, "lsb"):
+            return self.lsb.pyval, self.msb.pyval - self.lsb.pyval + 1
+
+        if hasattr(self, "bitOffset"):
+            width = self.width.pyval if hasattr(self, "bitWidth") else 32
+            return self.bitOffset.pyval, width
+
+        if hasattr(self, "bitRange"):
+            msb_string, lsb_string = self.bitRange.pyval[1:-1].split(":")
+            msb, lsb = util.to_int(msb_string), util.to_int(lsb_string)
+            return (lsb, msb - lsb + 1)
+
+        return 0, 32
 
 
 class FieldsElement(objectify.ObjectifiedElement):

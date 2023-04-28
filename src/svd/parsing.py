@@ -55,7 +55,7 @@ def parse(svd_path: Union[str, Path]) -> Device:
     with open(svd_file, "r") as f:
         xml_device = objectify.parse(f, parser=xml_parser)
 
-    device = Device(xml_device)
+    device = Device(xml_device.getroot())
 
     return device
 
@@ -65,7 +65,7 @@ class _ParentChildTagLookup(ET.PythonElementClassLookup):
         self._element_classes = {
             (None, "device"): bindings.DeviceElement
         }
-        
+
         for bindings_cls in bindings.ELEMENT_CLASSES:
             element_class_tag = bindings_cls.TAG
             for field_name, field_type in get_type_hints(bindings_cls).items():

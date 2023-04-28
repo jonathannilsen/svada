@@ -10,7 +10,9 @@ Python representation of an SVD Peripheral unit.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional
+from collections import defaultdict
+from itertools import chain
+from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional, Set
 from pprint import pformat
 import lxml.etree as ET
 
@@ -45,20 +47,22 @@ def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element
         if name == peripheral_name:
             return peripheral
 
-    raise LookupError(
-        f"Peripheral '{peripheral_name}' was not found in the device SVD")
+    raise LookupError(f"Peripheral '{peripheral_name}' was not found in the device SVD")
 
 
 class Device:
     def __init__(self, device: bindings.DeviceElement):
         self._device = device
         self._peripherals = {}
-        for peripheral_element in device.peripherals:
+        for peripheral_element in topo_sort_derived_peripherals(
+            device.peripherals.iterchildren()
+        ):
             peripheral = Peripheral(peripheral_element)
             self._peripherals[peripheral.name] = peripheral
 
     @property
     def peripherals(self) -> Dict[str, Peripheral]:
+        """Map of Peripherals in the device, indexed by name"""
         return self._peripherals
 
 
@@ -72,18 +76,38 @@ class Peripheral:
     the SVD.
     """
 
-    def __init__(self, peripheral: bindings.PeripheralElement, base_address: int = None):
+    def __init__(
+        self, peripheral: bindings.PeripheralElement, base_address: int = None
+    ):
         """
         Initialize the class attribute(s).
 
         :param peripheral_node: ElementTree element for the peripheral node in the device SVD file.
         :param base_address: Specific base address to use for the peripheral.
         """
+        self._peripheral = peripheral
+        # self._peripheral.reverse_lookup = self
+
+        self._base_peripheral = peripheral.find_derived_from()
+
         self._name: str = _simplify_name(peripheral.name.pyval)
-        self._base_address: int = peripheral.baseAddress.pyval if base_address is None else base_address
+        self._base_address: int = (
+            peripheral.baseAddress.pyval if base_address is None else base_address
+        )
+
+        # Maybe reuse the computed registers from _base_peripheral?
+        # Find a way to avoid hasattr
+        registers = (
+            self._peripheral.registers.iterchildren()
+            if hasattr(self, "registers")
+            else []
+        )
+        if self._base_peripheral is not None:
+            registers = chain(self._base_peripheral.registers.iterchildren(), registers)
 
         self._memory_map: Dict[int, Register] = get_memory_map(
-            peripheral.registers, base_address)
+            registers, self._base_address
+        )
 
         self._instance_map: Dict[str, int] = {
             register.name: address for address, register in self._memory_map.items()
@@ -127,8 +151,7 @@ class Peripheral:
             return self._memory_map[key]
 
         if key not in self._instance_map:
-            raise LookupError(
-                f"Peripheral does not contain a register named '{key}'")
+            raise LookupError(f"Peripheral does not contain a register named '{key}'")
 
         return self._memory_map[self._instance_map[key]]
 
@@ -170,8 +193,7 @@ class Peripheral:
             )
 
         affected_register = next(
-            (r for r in self._memory_map.values()
-             if r.name == register_field[0]), None
+            (r for r in self._memory_map.values() if r.name == register_field[0]), None
         )
 
         if affected_register is None:
@@ -186,8 +208,7 @@ class Peripheral:
             else lambda _: True
         )
 
-        affected_fields = list(
-            filter(field_match, affected_register.field_iter()))
+        affected_fields = list(filter(field_match, affected_register.field_iter()))
 
         if not any(affected_fields):
             raise ValueError(
@@ -232,7 +253,9 @@ class Register:
             field.set_parent(self)
 
     @classmethod
-    def from_element(cls, element: bindings.RegisterElement, name: str, reset_value: int) -> Register:
+    def from_element(
+        cls, element: bindings.RegisterElement, name: str, reset_value: int
+    ) -> Register:
         """
         Construct a Register class from an SVD element.
 
@@ -241,9 +264,13 @@ class Register:
         :param reset_value: Reset value of register.
         """
 
+        element_fields = (
+            element.fields.iterchildren() if hasattr(element, "fields") else []
+        )
+
         fields = {
             field.bit_offset: field
-            for field_element in element.fields
+            for field_element in element_fields
             for field in [Field.from_element(field_element, reset_value)]
         }
 
@@ -402,7 +429,9 @@ class Field:
         return cls("", 0, 32, default_register_value, {}, range(2**32))
 
     @classmethod
-    def from_element(cls, element: bindings.FieldElement, default_register_value: int) -> Field:
+    def from_element(
+        cls, element: bindings.FieldElement, default_register_value: int
+    ) -> Field:
         """
         Construct a Field class from an SVD element.
 
@@ -412,17 +441,20 @@ class Field:
         """
 
         name = element.name.pyval
-        bit_offset, bit_width = get_bit_range(element)
+        bit_offset, bit_width = element.get_bit_range()
 
         bit_mask = 2**bit_width - 1
         default_value = (default_register_value >> bit_offset) & bit_mask
 
         # We do not support "do not care" bits, as by marking bits "x", see
         # SVD docs "/device/peripherals/peripheral/registers/.../enumeratedValue"
-        enums = {
-            enum.name.pyval: enum.value.pyval
-            for enum in element.enumerated_values
-        }
+        if hasattr(element, "enumeratedValues"):
+            enums = {
+                enum.name.pyval: enum.value.pyval
+                for enum in element.enumeratedValues.enumeratedValue
+            }
+        else:
+            enums = {}
 
         allowed_values = enums.values() if len(enums) != 0 else range(bit_mask + 1)
 
@@ -587,28 +619,45 @@ class Field:
         self._allowed_values = range(2**self._bit_width)
 
 
-def get_bit_range(field: bindings.FieldElement) -> Tuple[int, int]:
+def topo_sort_derived_peripherals(
+    peripherals: Iterable[bindings.PeripheralElement],
+) -> List[bindings.PeripheralElement]:
     """
-    Get the bit range of a field.
+    Topologically sort the peripherals based on 'derivedFrom' attributes using Kahn's algorithm.
+    The returned list has the property that the peripheral element at index i does not derive from
+    any of the peripherals at indices 0..(i - 1).
 
-    :param field: ElementTree representation of an SVD Field.
-
-    :return: Tuple of the field's bit offset, and its bit width.
+    :param peripherals: List of peripheral elements to sort
+    :return: List of peripheral elements topologically sorted based on the 'derivedFrom' attribute.
     """
 
-    if hasattr(field, "lsb"):
-        return field.lsb.pyval, field.msb.pyval - field.lsb.pyval + 1
+    sorted_peripherals: List[bindings.PeripheralElement] = []
+    no_dep_peripherals: List[bindings.PeripheralElement] = []
+    dep_graph: Dict[str, List[bindings.PeripheralElement]] = defaultdict(list)
 
-    if hasattr(field, "bitOffset"):
-        width = field.width.pyval if hasattr(field, "bitWidth") else 32
-        return field.bitOffset.pyval, width
+    for peripheral in peripherals:
+        if (derived_from := peripheral.get("derivedFrom")) is not None:
+            dep_graph[derived_from].append(peripheral)
+        else:
+            no_dep_peripherals.append(peripheral)
 
-    if hasattr(field, "bitRange"):
-        msb_string, lsb_string = field.bitRange.pyval[1:-1].split(":")
-        msb, lsb = util.to_int(msb_string), util.to_int(lsb_string)
-        return (lsb, msb - lsb + 1)
+    while no_dep_peripherals:
+        peripheral = no_dep_peripherals.pop()
+        sorted_peripherals.append(peripheral)
+        # Each peripheral has a maximum of one in-edge since they can only derive from one
+        # peripheral. Therefore, once they are encountered they have no remaining dependencies.
+        no_dep_peripherals.extend(dep_graph[peripheral.name.pyval])
+        dep_graph.pop(peripheral.name.pyval, None)
 
-    return 0, 32
+    if dep_graph:
+        raise ValueError(
+            "Unable to determine order in which peripherals are derived. "
+            "This is likely caused either by a cycle in the "
+            "'derivedFrom' attributes, or a 'derivedFrom' attribute pointing to a "
+            "nonexistent peripheral."
+        )
+
+    return sorted_peripherals
 
 
 def get_register_elements(
@@ -616,6 +665,7 @@ def get_register_elements(
     base_address: int,
     prefix: str = "",
     reset_value: int = 0,
+    depth: int = 0,
 ) -> Dict[int, RegisterElement]:
     """
     Helper that recursively extracts the addresses, names, and ElementTree representations of all
@@ -631,11 +681,11 @@ def get_register_elements(
     :return: Mapping between Register addresses and their ElementTree representing element, names,
         and reset values.
     """
+    print(f"depth: {depth}")
 
-    name = element.find("name").text if element.find("name") is not None else ""
+    name = element.name.pyval
     full_name = util.strip_prefixes_suffixes(
-        util.strip_prefixes_suffixes(
-            prefix + "_" + name.lower(), [], ["[%s]"]),
+        util.strip_prefixes_suffixes(prefix + "_" + name.lower(), [], ["[%s]"]),
         ["_"],
         ["_"],
     )
@@ -668,13 +718,12 @@ def get_register_elements(
         registers = {
             **registers,
             **get_register_elements(
-                child, base_address, prefix=full_name, reset_value=reset_value
+                child, base_address, prefix=full_name, reset_value=reset_value, depth=depth+1
             ),
         }
 
     if len(children) == 0:
-        registers = {base_address: RegisterElement(
-            element, full_name, reset_value)}
+        registers = {base_address: RegisterElement(element, full_name, reset_value)}
 
     expanded_registers: Dict[int, RegisterElement] = {}
     for address, register_bundle in registers.items():
@@ -684,7 +733,9 @@ def get_register_elements(
     return expanded_registers
 
 
-def get_memory_map(element: bindings.RegistersElement, base_address: int) -> Dict[int, Register]:
+def get_memory_map(
+    element: Iterable[bindings.RegisterElement], base_address: int
+) -> Dict[int, Register]:
     """
     Get the memory map of a peripheral unit given by an SVD element and its
     base address.
@@ -695,7 +746,10 @@ def get_memory_map(element: bindings.RegistersElement, base_address: int) -> Dic
     :return: Mapping from addresses to Registers.
     """
 
-    register_bundles = get_register_elements(element, base_address)
+    register_bundles = {}
+    for register in element:
+        register_bundles.update(get_register_elements(register, base_address))
+
     instance_counter = {name: 0 for _, name, _ in register_bundles.values()}
 
     memory_map: Dict[int, Register] = {}
