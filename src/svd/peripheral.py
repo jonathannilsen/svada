@@ -53,12 +53,19 @@ def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element
 class Device:
     def __init__(self, device: bindings.DeviceElement):
         self._device = device
-        self._peripherals = {}
+        peripherals = {}
         for peripheral_element in topo_sort_derived_peripherals(
             device.peripherals.iterchildren()
         ):
-            peripheral = Peripheral(peripheral_element)
-            self._peripherals[peripheral.name] = peripheral
+            if (derived_from := peripheral_element.get("derivedFrom")) is not None:
+                base_peripheral = peripherals[_simplify_name(derived_from)]
+            else:
+                base_peripheral = None
+
+            peripheral = Peripheral(peripheral_element, base_peripheral=base_peripheral)
+            peripherals[peripheral.name] = peripheral
+
+        self._peripherals = peripherals
 
     @property
     def peripherals(self) -> Dict[str, Peripheral]:
@@ -77,7 +84,10 @@ class Peripheral:
     """
 
     def __init__(
-        self, peripheral: bindings.PeripheralElement, base_address: int = None
+        self,
+        peripheral: bindings.PeripheralElement,
+        base_peripheral: Optional[bindings.PeripheralElement],
+        base_address: int = None,
     ):
         """
         Initialize the class attribute(s).
@@ -86,9 +96,7 @@ class Peripheral:
         :param base_address: Specific base address to use for the peripheral.
         """
         self._peripheral = peripheral
-        # self._peripheral.reverse_lookup = self
-
-        self._base_peripheral = peripheral.find_derived_from()
+        self._base_peripheral = base_peripheral
 
         self._name: str = _simplify_name(peripheral.name.pyval)
         self._base_address: int = (
@@ -96,22 +104,42 @@ class Peripheral:
         )
 
         # Maybe reuse the computed registers from _base_peripheral?
+        # This is possible as long as the peripheral element has the same register properties
+        # as the base element (which is probably most cases)
+        # Need to make it memory map etc. is relative to the base address to reuse it
+
         # Find a way to avoid hasattr
+        # registers = (
+        #     self._peripheral.registers.iterchildren()
+        #     if hasattr(self, "registers")
+        #     else []
+        # )
+        # if self._base_peripheral is not None and hasattr(
+        #     self._base_peripheral._peripheral, "registers"
+        # ):
+        #     registers = chain(
+        #         self._base_peripheral._peripheral.registers.iterchildren(), registers
+        #     )
+        # just for benchmarking
         registers = (
-            self._peripheral.registers.iterchildren()
+            self._peripheral.registers.iterdescendants()
             if hasattr(self, "registers")
             else []
         )
-        if self._base_peripheral is not None:
-            registers = chain(self._base_peripheral.registers.iterchildren(), registers)
+        if self._base_peripheral is not None and hasattr(
+            self._base_peripheral._peripheral, "registers"
+        ):
+            registers = chain(
+                self._base_peripheral._peripheral.registers.iterdescendants(), registers
+            )
 
-        self._memory_map: Dict[int, Register] = get_memory_map(
-            registers, self._base_address
-        )
-
-        self._instance_map: Dict[str, int] = {
-            register.name: address for address, register in self._memory_map.items()
-        }
+        reg_list = list(registers)
+        #self._memory_map: Dict[int, Register] = get_memory_map(
+        #   registers, self._base_address
+        #)
+        #self._instance_map: Dict[str, int] = {
+        #   register.name: address for address, register in self._memory_map.items()
+        #}
 
     @property
     def name(self) -> str:
@@ -645,7 +673,7 @@ def topo_sort_derived_peripherals(
         peripheral = no_dep_peripherals.pop()
         sorted_peripherals.append(peripheral)
         # Each peripheral has a maximum of one in-edge since they can only derive from one
-        # peripheral. Therefore, once they are encountered they have no remaining dependencies.
+        # peripheral. Therefore, once they are encountered here they have no remaining dependencies.
         no_dep_peripherals.extend(dep_graph[peripheral.name.pyval])
         dep_graph.pop(peripheral.name.pyval, None)
 
@@ -665,7 +693,6 @@ def get_register_elements(
     base_address: int,
     prefix: str = "",
     reset_value: int = 0,
-    depth: int = 0,
 ) -> Dict[int, RegisterElement]:
     """
     Helper that recursively extracts the addresses, names, and ElementTree representations of all
@@ -681,8 +708,6 @@ def get_register_elements(
     :return: Mapping between Register addresses and their ElementTree representing element, names,
         and reset values.
     """
-    print(f"depth: {depth}")
-
     name = element.name.pyval
     full_name = util.strip_prefixes_suffixes(
         util.strip_prefixes_suffixes(prefix + "_" + name.lower(), [], ["[%s]"]),
@@ -718,7 +743,10 @@ def get_register_elements(
         registers = {
             **registers,
             **get_register_elements(
-                child, base_address, prefix=full_name, reset_value=reset_value, depth=depth+1
+                child,
+                base_address,
+                prefix=full_name,
+                reset_value=reset_value,
             ),
         }
 
