@@ -4,7 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-from typing import List
+from __future__ import annotations
+
+import enum
+from typing import Any, List
 
 
 def strip_prefixes_suffixes(word: str, prefixes: List[str], suffixes: List[str]) -> str:
@@ -63,3 +66,20 @@ def to_bool(value: str) -> bool:
     if value in ("false", "0"):
         return False
     raise ValueError(f"Invalid boolean value: {value}")
+
+
+class CaseInsensitiveStrEnum(enum.Enum):
+    @classmethod
+    def from_str(cls, value: str) -> CaseInsensitiveStrEnum:
+        value_lower = value.lower()
+        for member in cls:
+            if member.value.lower() == value_lower:
+                return member
+        raise ValueError(
+            f"Class {cls.__qualname__} has no member corresponding to '{value}'"
+        )
+
+
+class BindingWrapper:
+    def __init__(self, binding):
+        self._binding = binding

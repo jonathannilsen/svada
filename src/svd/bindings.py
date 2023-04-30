@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
@@ -18,6 +18,12 @@ from . import util
 # TODO: attributes
 # TODO: validation
 # TODO: assert that element class is found
+
+
+class _XmlDataElementBinding(objectify.ObjectifiedDataElement):
+    def get_pyval(self, default: Optional[Any] = None) -> Any:
+        ...
+
 
 class AccessElement(objectify.ObjectifiedDataElement):
     @property
@@ -33,8 +39,8 @@ class ReadActionElement(objectify.ObjectifiedDataElement):
 
 class EndianTypeElement(objectify.ObjectifiedDataElement):
     @property
-    def pyval(self) -> svd_enums.EndianType:
-        return svd_enums.EndianType.from_str(self.text)
+    def pyval(self) -> svd_enums.Endian:
+        return svd_enums.Endian.from_str(self.text)
 
 
 class SauAccessElement(objectify.ObjectifiedDataElement):
@@ -84,14 +90,31 @@ class SvdIntElement(objectify.IntElement):
         self._setValueParser(util.to_int)
 
 
-class RangeWriteConstraintElement(objectify.ObjectifiedElement):
+
+class _XmlElementBinding(objectify.ObjectifiedElement):
+    def __getattr__(self, name: str) -> Any:
+        """
+        Get the attribute with the given name.
+        Overridden to make it so properties that have annotations in the class
+        default to returning None rather than raising an exception.
+        """
+        try:
+            # TODO: consider whether this should just return the pyval
+            return super().__getattr__(name)
+        except AttributeError:
+            if name not in self.__annotations__:
+                raise
+            return None
+
+
+class RangeWriteConstraintElement(_XmlElementBinding):
     TAG = "range"
 
     minimum: SvdIntElement
     maximum: SvdIntElement
 
 
-class WriteConstraintElement(objectify.ObjectifiedElement):
+class WriteConstraintElement(_XmlElementBinding):
     TAG = "writeConstraint"
 
     writeAsRead: BoolElement
@@ -99,7 +122,7 @@ class WriteConstraintElement(objectify.ObjectifiedElement):
     range: RangeWriteConstraintElement
 
 
-class SauRegionElement(objectify.ObjectifiedElement):
+class SauRegionElement(_XmlElementBinding):
     TAG = "region"
 
     base: SvdIntElement
@@ -108,13 +131,13 @@ class SauRegionElement(objectify.ObjectifiedElement):
     enabled: BoolElement
 
 
-class SauRegionsConfigElement(objectify.ObjectifiedElement):
+class SauRegionsConfigElement(_XmlElementBinding):
     TAG = "sauRegions"
 
     region: SauRegionElement
 
 
-class CpuElement(objectify.ObjectifiedElement):
+class CpuElement(_XmlElementBinding):
     TAG = "cpu"
 
     name: CpuNameElement
@@ -136,7 +159,7 @@ class CpuElement(objectify.ObjectifiedElement):
     sauRegionsConfig: SauRegionsConfigElement
 
 
-class PeripheralElement(objectify.ObjectifiedElement):
+class PeripheralElement(_XmlElementBinding):
     TAG = "peripheral"
 
     name: StringElement
@@ -160,33 +183,23 @@ class PeripheralElement(objectify.ObjectifiedElement):
 
     dim: SvdIntElement
     dimIncrement: SvdIntElement
-    dimIndex: SvdIntElement
+    dimIndex: StringElement
     dimName: StringElement
     dimArrayIndex: DimArrayIndexElement
 
     registers: RegistersElement
 
-    def find_derived_from(self) -> Optional[PeripheralElement]:
-        derived_from = self.get("derivedFrom")
-        if derived_from is None:
-            return None
-        peripherals = self.getparent()
-        base_peripheral = peripherals.xpath(f"//peripheral[name='{derived_from}']")
-        if not base_peripheral:
-            raise LookupError(f"Did not find a peripheral with name'{derived_from}'")
-        return base_peripheral[0]
-
     def _init(self):
         self.reverse_lookup = None
 
 
-class PeripheralsElement(objectify.ObjectifiedElement):
+class PeripheralsElement(_XmlElementBinding):
     TAG = "peripherals"
 
     peripheral: PeripheralElement
 
 
-class DeviceElement(objectify.ObjectifiedElement):
+class DeviceElement(_XmlElementBinding):
     TAG = "device"
 
     vendor: StringElement
@@ -214,14 +227,14 @@ class DeviceElement(objectify.ObjectifiedElement):
         self.reverse_lookup = None
 
 
-class DimArrayIndexElement(objectify.ObjectifiedElement):
+class DimArrayIndexElement(_XmlElementBinding):
     TAG = "dimArrayIndex"
 
     headerEnumName: StringElement
     enumeratedValue: EnumeratedValueElement
 
 
-class EnumerationElement(objectify.ObjectifiedElement):
+class EnumerationElement(_XmlElementBinding):
     TAG = "enumeratedValues"
 
     name: StringElement
@@ -230,7 +243,7 @@ class EnumerationElement(objectify.ObjectifiedElement):
     enumeratedValue: EnumeratedValueElement
 
 
-class EnumeratedValueElement(objectify.ObjectifiedElement):
+class EnumeratedValueElement(_XmlElementBinding):
     TAG = "enumeratedValue"
 
     name: StringElement
@@ -239,7 +252,7 @@ class EnumeratedValueElement(objectify.ObjectifiedElement):
     isDefault: BoolElement
 
 
-class AddressBlockElement(objectify.ObjectifiedElement):
+class AddressBlockElement(_XmlElementBinding):
     TAG = "addressBlock"
 
     offset: SvdIntElement
@@ -248,7 +261,7 @@ class AddressBlockElement(objectify.ObjectifiedElement):
     protection: ProtectionElement
 
 
-class InterruptElement(objectify.ObjectifiedElement):
+class InterruptElement(_XmlElementBinding):
     TAG = "interrupt"
 
     name: StringElement
@@ -262,7 +275,7 @@ class BitRangeElement(StringElement):
     ...
 
 
-class FieldElement(objectify.ObjectifiedElement):
+class FieldElement(_XmlElementBinding):
     TAG = "field"
 
     name: StringElement
@@ -307,13 +320,13 @@ class FieldElement(objectify.ObjectifiedElement):
         return 0, 32
 
 
-class FieldsElement(objectify.ObjectifiedElement):
+class FieldsElement(_XmlElementBinding):
     TAG = "fields"
 
     field: FieldElement
 
 
-class RegisterElement(objectify.ObjectifiedElement):
+class RegisterElement(_XmlElementBinding):
     TAG = "register"
 
     name: StringElement
@@ -343,7 +356,7 @@ class RegisterElement(objectify.ObjectifiedElement):
     fields: FieldsElement
 
 
-class ClusterElement(objectify.ObjectifiedElement):
+class ClusterElement(_XmlElementBinding):
     TAG = "cluster"
 
     name: StringElement
@@ -368,7 +381,7 @@ class ClusterElement(objectify.ObjectifiedElement):
     cluster: ClusterElement
 
 
-class RegistersElement(objectify.ObjectifiedElement):
+class RegistersElement(_XmlElementBinding):
     TAG = "registers"
 
     cluster: ClusterElement

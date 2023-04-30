@@ -10,8 +10,8 @@ Python representation of an SVD Peripheral unit.
 
 from __future__ import annotations
 
-from collections import defaultdict
-from itertools import chain
+from collections import ChainMap, defaultdict
+from itertools import chain, product
 from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional, Set
 from pprint import pformat
 import lxml.etree as ET
@@ -53,16 +53,17 @@ def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element
 class Device:
     def __init__(self, device: bindings.DeviceElement):
         self._device = device
+        self._reg_props = RegisterProperties(self._device)
+
         peripherals = {}
-        for peripheral_element in topo_sort_derived_peripherals(
-            device.peripherals.iterchildren()
-        ):
+        for peripheral_element in topo_sort_derived_peripherals(device.peripherals.iterchildren()):
             if (derived_from := peripheral_element.get("derivedFrom")) is not None:
                 base_peripheral = peripherals[_simplify_name(derived_from)]
             else:
                 base_peripheral = None
 
-            peripheral = Peripheral(peripheral_element, base_peripheral=base_peripheral)
+            peripheral = Peripheral(
+                peripheral_element, base_reg_props=self._reg_props, base_peripheral=base_peripheral)
             peripherals[peripheral.name] = peripheral
 
         self._peripherals = peripherals
@@ -71,6 +72,10 @@ class Device:
     def peripherals(self) -> Dict[str, Peripheral]:
         """Map of Peripherals in the device, indexed by name"""
         return self._peripherals
+
+
+class MemoryMap:
+    ...
 
 
 class Peripheral:
@@ -86,7 +91,8 @@ class Peripheral:
     def __init__(
         self,
         peripheral: bindings.PeripheralElement,
-        base_peripheral: Optional[bindings.PeripheralElement],
+        base_reg_props: RegisterProperties,
+        base_peripheral: Optional[Peripheral] = None,
         base_address: int = None,
     ):
         """
@@ -99,47 +105,49 @@ class Peripheral:
         self._base_peripheral = base_peripheral
 
         self._name: str = _simplify_name(peripheral.name.pyval)
-        self._base_address: int = (
-            peripheral.baseAddress.pyval if base_address is None else base_address
-        )
+        self._base_address: int = peripheral.baseAddress.pyval if base_address is None else base_address
+        self._reg_props = RegisterProperties(self._peripheral, base=base_reg_props)
 
         # Maybe reuse the computed registers from _base_peripheral?
         # This is possible as long as the peripheral element has the same register properties
         # as the base element (which is probably most cases)
         # Need to make it memory map etc. is relative to the base address to reuse it
 
-        # Find a way to avoid hasattr
-        # registers = (
-        #     self._peripheral.registers.iterchildren()
-        #     if hasattr(self, "registers")
-        #     else []
-        # )
-        # if self._base_peripheral is not None and hasattr(
-        #     self._base_peripheral._peripheral, "registers"
-        # ):
-        #     registers = chain(
-        #         self._base_peripheral._peripheral.registers.iterchildren(), registers
-        #     )
-        # just for benchmarking
-        registers = (
-            self._peripheral.registers.iterdescendants()
-            if hasattr(self, "registers")
-            else []
-        )
-        if self._base_peripheral is not None and hasattr(
-            self._base_peripheral._peripheral, "registers"
-        ):
-            registers = chain(
-                self._base_peripheral._peripheral.registers.iterdescendants(), registers
-            )
+        if (registers_element := self._peripheral.registers) is not None:
+            own_registers = registers_element.iterchildren()
+        else:
+            own_registers = []
 
-        reg_list = list(registers)
-        #self._memory_map: Dict[int, Register] = get_memory_map(
-        #   registers, self._base_address
-        #)
-        #self._instance_map: Dict[str, int] = {
-        #   register.name: address for address, register in self._memory_map.items()
-        #}
+        # Keep a separate copy of modified registers?
+        modified_memory_map = {}
+        memory_map = get_memory_map(own_registers, self._reg_props)
+        instance_map = { register.name: address for address, register in memory_map.items() }
+
+        if self._base_peripheral is not None:
+            # If the register properties are equal, then it is possible to reuse all the immutable
+            # properties from the base peripheral.
+            # This avoids traversing the same registers/fields many times.
+            if self._base_peripheral._reg_props == self._reg_props:
+                memory_map = ChainMap(modified_memory_map, self._base_peripheral._memory_map, memory_map)
+                instance_map = ChainMap(self._base_peripheral._instance_map, instance_map)
+            # Otherwise we have to recompute the memory map, because the difference in register properties
+            # propagates down to the register elements.
+            elif (base_registers_element := self._base_peripheral._peripheral.registers) is not None:
+                base_registers = base_registers_element.iterchildren()
+                base_memory_map = get_memory_map(base_registers, self._reg_props)
+                memory_map = ChainMap(modified_memory_map, base_memory_map, memory_map)
+                instance_map = ChainMap(self._base_peripheral._instance_map, instance_map)
+        else:
+            pass     
+
+        self._memory_map: Dict[int, Register] = memory_map
+        self._instance_map: Dict[str, int] = instance_map
+
+        self._values: Dict[int, int] = {
+            address: register.reset_value for address, register in self._memory_map.items()
+        }
+        self._unconstrained_paths: Set[str] = set()
+
 
     @property
     def name(self) -> str:
@@ -248,23 +256,13 @@ class Peripheral:
             field.unconstrain()
 
 
-class RegisterElement(NamedTuple):
-    """
-    Basic tuple representation of a register used for element mapping.
-    """
-
-    element: ET.Element
-    name: str
-    reset_value: int
-
-
 class Register:
     """
     Internal representation of a peripheral register.
     Not intended for direct user interaction.
     """
 
-    def __init__(self, name: str, fields: Dict[int, Field], reset_value: int = 0):
+    def __init__(self, register: bindings.RegisterElement, name: str, address: int, reg_props: RegisterProperties, fields: Dict[int, Field]):
         """
         Initialize the class attribute(s).
 
@@ -274,8 +272,11 @@ class Register:
         """
 
         self._name: str = name
+        self._address = address
+        self._register = register
+        self._reg_props = reg_props
         self._fields: Dict[int, Field] = fields
-        self._reset_value: int = reset_value
+        self._value: int = self._reg_props.reset_value
 
         for _bit_offset, field in self._fields.items():
             field.set_parent(self)
@@ -320,7 +321,7 @@ class Register:
     @property
     def reset_value(self) -> int:
         """Register reset value."""
-        return self._reset_value
+        return self._reg_props.reset_value
 
     @property
     def modified(self) -> bool:
@@ -328,8 +329,17 @@ class Register:
         return any([field.modified for field in self.fields.values()])
 
     @property
+    def value(self) -> int:
+        """The raw numeric value the register contains."""
+        return self._value
+
+    @value.setter
+    def value(self, new_value: int):
+        self._value = None
+
     def raw(self) -> int:
         """The raw numeric value the register contains."""
+        return self.value
         value = self.reset_value
         for offset, field in self.fields.items():
             value = (value & ~field.mask) | ((field.raw << offset) & field.mask)
@@ -688,12 +698,37 @@ def topo_sort_derived_peripherals(
     return sorted_peripherals
 
 
+def iter_dim(dimensions: List[DimensionProperties]) -> Iterable[Tuple[int, int]]:
+    """
+    TODO better doc
+    Dimensions are ordered from outer to inner dimensions.
+    Yields tuples (index, offset)
+    """
+    if not dimensions:
+        return 0, 0
+
+    index_factors = [1 for _ in dimensions]
+
+    for i in range(len(dimensions) - 1, 0, -1):
+        index_factors[i - 1] = index_factors[i] * dimensions[i].length
+
+    for indices in product(*(range(dim.length) for dim in dimensions)):
+        index = 0
+        offset = 0
+        for i, factor, dim in zip(indices, index_factors, dimensions):
+            index += i * factor
+            offset += i * dim.step
+        yield index, offset
+
+
 def get_register_elements(
+    result: Dict[int, Register],
     element: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
-    base_address: int,
+    base_reg_props: RegisterProperties,
+    parent_dim_props: List[DimensionProperties] = [],
     prefix: str = "",
-    reset_value: int = 0,
-) -> Dict[int, RegisterElement]:
+    base_address: int = 0,
+):
     """
     Helper that recursively extracts the addresses, names, and ElementTree representations of all
     SVD Registers that are children of a given SVD element.
@@ -709,33 +744,41 @@ def get_register_elements(
         and reset values.
     """
     name = element.name.pyval
-    full_name = util.strip_prefixes_suffixes(
-        util.strip_prefixes_suffixes(prefix + "_" + name.lower(), [], ["[%s]"]),
+    full_name =  util.strip_prefixes_suffixes(util.strip_prefixes_suffixes(prefix + "_" + name.lower(), [], ["[%s]"]),
         ["_"],
         ["_"],
     )
 
-    reset_value = (
-        util.to_int(element.find("resetValue").text)
-        if element.find("resetValue") is not None
-        else reset_value
-    )
+    reg_props = RegisterProperties(element, base=base_reg_props)
+    dim_props = DimensionProperties(element)
 
-    address_offset = (
-        util.to_int(element.find("addressOffset").text)
-        if element.find("addressOffset") is not None
-        else 0
-    )
-
-    if name.endswith("[%s]"):
-        array_length = util.to_int(element.find("dim").text)
-        step = util.to_int(element.find("dimIncrement").text)
+    if (address_offset_data := element.addressOffset) is not None:
+        address_offset = address_offset_data.pyval
     else:
-        array_length = 1
-        step = 0
+        address_offset = 0
 
-    occurences = [address_offset + step * s for s in range(array_length)]
+    #occurences = [address_offset + dim_props.step * s for s in range(dim_props.length)]
 
+    if dim_props.length > 1:
+        parent_dim_props.append(dim_props)
+
+    # Pass index, offset, fields to register constructor - it can calculate the address offset itself
+    if isinstance(element, bindings.RegisterElement):
+        # Register addresses are defined relative to the enclosing element
+        base_offset = base_address + address_offset
+        for index, offset in iter_dim(parent_dim_props):
+            address = base_offset + offset
+            name = f"{full_name}_{index}"
+            result[address] = Register(element, name=name, address=address, reg_props=reg_props, fields={})
+
+    else:
+        for child in element.iterchildren(bindings.RegisterElement.TAG, bindings.ClusterElement.TAG):
+            get_register_elements(result, child, reg_props, parent_dim_props, full_name, address_offset)
+
+    if dim_props.length > 1:
+        parent_dim_props.pop()
+
+    """
     registers: Dict[int, RegisterElement] = {}
     children = element.findall("cluster") + element.findall("register")
 
@@ -744,10 +787,7 @@ def get_register_elements(
             **registers,
             **get_register_elements(
                 child,
-                base_address,
-                prefix=full_name,
-                reset_value=reset_value,
-            ),
+                base_address,)
         }
 
     if len(children) == 0:
@@ -759,10 +799,11 @@ def get_register_elements(
             expanded_registers[address + offset] = register_bundle
 
     return expanded_registers
+    """
 
 
 def get_memory_map(
-    element: Iterable[bindings.RegisterElement], base_address: int
+    element: Iterable[bindings.RegisterElement], base_reg_props: RegisterProperties
 ) -> Dict[int, Register]:
     """
     Get the memory map of a peripheral unit given by an SVD element and its
@@ -776,7 +817,9 @@ def get_memory_map(
 
     register_bundles = {}
     for register in element:
-        register_bundles.update(get_register_elements(register, base_address))
+        get_register_elements(register_bundles, register, base_reg_props)
+
+    return register_bundles
 
     instance_counter = {name: 0 for _, name, _ in register_bundles.values()}
 
