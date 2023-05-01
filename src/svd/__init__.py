@@ -9,8 +9,8 @@ from .parsing import (
     parse,
 )
 from .peripheral import (
+    Device,
     Peripheral,
-    RegisterElement,
     Register,
     Field,
     get_memory_map,
