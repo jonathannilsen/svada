@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 from collections import ChainMap, defaultdict
+from dataclasses import dataclass
 from itertools import chain, product
 from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional, Set
 from pprint import pformat
@@ -130,13 +131,19 @@ class Peripheral:
         """Map of the peripheral register contents in memory."""
         memory: Dict[int, Register] = {}
 
-        # Initialize with the registers defined in the base peripheral, if any
+        # Add the registers defined in this peripheral
+        if (registers_element := self._peripheral.registers) is not None:
+            own_registers = registers_element.iterchildren()
+            own_memory = get_memory_map(own_registers, self._reg_props)
+            for address, register in own_memory.items():
+                memory[address] = register
+
+        # Add the registers defined in the base peripheral, if any
         if self._base_peripheral is not None:
             # If the register properties are equal, then it is possible to reuse all the immutable
             # properties from the base peripheral.
             if self._base_peripheral._reg_props == self._reg_props:
-                for address, register in self._base_peripheral.memory_map.items():
-                    memory[self._base_address + address] = copy.deepcopy(register)
+                memory = ChainMap(memory, self._base_peripheral.memory_map)
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
             elif (
@@ -144,15 +151,7 @@ class Peripheral:
             ) is not None:
                 base_registers = base_registers_element.iterchildren()
                 base_memory = get_memory_map(base_registers, self._reg_props)
-                for address, register in base_memory.items():
-                    memory[self._base_address + address] = register
-
-        # Add the registers defined in this peripheral
-        if (registers_element := self._peripheral.registers) is not None:
-            own_registers = registers_element.iterchildren()
-            own_memory = get_memory_map(own_registers, self._reg_props)
-            for address, register in own_memory.items():
-                memory[self._base_address + address] = register
+                memory = ChainMap(memory, base_memory)
 
         return memory
 
@@ -182,7 +181,7 @@ class Peripheral:
             )
 
         if isinstance(key, int):
-            if key not in self._memory_map:
+            if key not in self.memory_map:
                 raise LookupError(
                     f"Peripheral does not contain a memory map for address '{hex(key)}'"
                 )
@@ -258,45 +257,21 @@ class Peripheral:
             field.unconstrain()
 
 
-class Register:
-    """
-    Internal representation of a peripheral register.
-    Not intended for direct user interaction.
-    """
-
-    def __init__(
-        self,
-        register: bindings.RegisterElement,
-        name: str,
-        address: int,
-        reg_props: RegisterProperties,
-        fields: Dict[int, Field],
-    ):
-        """
-        Initialize the class attribute(s).
-
-        :param name: Register name
-        :param fields: Dictionary of bitfields present in the register
-        :param reset_value: Register reset value
-        """
-
-        self._name: str = name
-        self._address = address
-        self._register = register
-        self._reg_props = reg_props
-        self._fields: Dict[int, Field] = fields
-        self._value: int = self._reg_props.reset_value
-
-        for _bit_offset, field in self._fields.items():
-            field.set_parent(self)
+@dataclass(frozen=True)
+class RegisterDescription:
+    name: str
+    address: int
+    reg_props: RegisterProperties
+    fields: Dict[int, FieldDescription]
+    element: bindings.RegisterElement
 
     @classmethod
     def from_element(
         cls,
-        element: bindings.RegisterElement,
         name: str,
         address: int,
         reg_props: RegisterProperties,
+        element: bindings.RegisterElement,
     ) -> Register:
         """
         Construct a Register class from an SVD element.
@@ -305,7 +280,6 @@ class Register:
         :param name: Name of register.
         :param reset_value: Reset value of register.
         """
-
         if (fields := element.fields) is not None:
             element_fields = fields.iterchildren()
         else:
@@ -314,34 +288,60 @@ class Register:
         fields = {
             field.bit_offset: field
             for field_element in element_fields
-            for field in [Field.from_element(field_element, reg_props.reset_value)]
+            for field in [
+                FieldDescription.from_element(field_element, reg_props.reset_value)
+            ]
         }
 
         if len(fields) == 0:
-            fields = {0: Field.from_default(reg_props.reset_value)}
+            fields = {0: FieldDescription.from_default(reg_props.reset_value)}
 
         return cls(
-            register=element,
             name=name,
             address=address,
             reg_props=reg_props,
             fields=fields,
+            element=element,
         )
+
+
+class Register:
+    """
+    Internal representation of a peripheral register.
+    Not intended for direct user interaction.
+    """
+
+    def __init__(
+        self,
+        description: RegisterDescription,
+        peripheral: Peripheral,
+    ):
+        """
+        Initialize the class attribute(s).
+
+        :param name: Register name
+        :param fields: Dictionary of bitfields present in the register
+        :param reset_value: Register reset value
+        """
+        self._description = description
+        self._peripheral = peripheral
 
     @property
     def name(self) -> str:
         """Name of the register."""
-        return self._name
+        return self._description.name
 
-    @property
+    @cached_property
     def fields(self) -> Dict[int, Field]:
         """Register bitfields."""
-        return self._fields
+        return {
+            field.bit_offset: Field(field, self) for field in self._description.fields
+        }
 
     @property
     def reset_value(self) -> int:
         """Register reset value."""
-        return self._reg_props.reset_value
+        return self._description.reg_props.reset_value
 
     @property
     def modified(self) -> bool:
@@ -350,13 +350,11 @@ class Register:
 
     def raw(self) -> int:
         """The raw numeric value the register contains."""
-        value = self.reset_value
-        for offset, field in self.fields.items():
-            value = (value & ~field.mask) | ((field.raw << offset) & field.mask)
-        return value
-
-    #def __deepcopy__(self, memo):
-    #    ...
+        return self._peripheral._values.get(self._description.address, self.reset_value)
+        #value = self.reset_value
+        #for offset, field in self.fields.items():
+        #    value = (value & ~field.mask) | ((field.raw << offset) & field.mask)
+        #return value
 
     def __repr__(self):
         """Basic representation of the class object."""
@@ -388,7 +386,7 @@ class Register:
         if isinstance(key, int):
             if key not in self.fields:
                 raise LookupError(
-                    f"Register '{self._name}' does not define a field at bit"
+                    f"Register '{self.name}' does not define a field at bit"
                     " offset '{key}'"
                 )
             return self.fields[key]
@@ -399,7 +397,7 @@ class Register:
 
         if key not in names_to_offsets:
             raise LookupError(
-                f"Register '{self._name}' does not define a field with name '{key}'"
+                f"Register '{self.name}' does not define a field with name '{key}'"
             )
 
         return self.fields[names_to_offsets[key]]
@@ -413,15 +411,24 @@ class Register:
 
         self[key].set(value)
 
-    def set(self, value: int):
+    def set(self, value: int, mask: Optional[int] = None):
         """
         Set all the fields in the register, given an overall raw register value.
 
         :param value: Raw register value.
         """
+        # TODO: validate against fields
+        # for field in self.fields.values():
+        #     field.set_from_register(value)
 
-        for field in self.fields.values():
-            field.set_from_register(value)
+        if mask is not None:
+            prev_value = self._peripheral._values.get(self._description.address, self.reset_value)
+            new_value = (prev_value & ~mask) | (value & mask)
+        else:
+            new_value = value
+
+        self._peripheral.values[self._description.address] = new_value
+
 
     def field_iter(self) -> Iterable[Field]:
         """
@@ -430,54 +437,25 @@ class Register:
         return iter(self.fields.values())
 
 
-class Field:
-    """
-    Internal representation of a register field.
-    Not intended for direct user interaction.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        bit_offset: int,
-        bit_width: int,
-        default_value: int,
-        enums: Dict[str, int],
-        allowed_values: Union[List[int], range],
-    ):
-        """
-        Initialize the class attribute(s).
-
-        :param name: Name of field.
-        :param bit_offset: The field's bit offset from position 0. Same as bit position.
-        :param bit_width: The bit width of the field.
-        :param default_value: The value the field has at reset.
-        :param enums: A mapping between field enumerations and their corresponding raw
-            values. Field enumerations are values such as "Allowed" = 1, "NotAllowed" = 0
-            and are defined by the device's SVD file. This is allowed to be an empty map,
-            if enumerations are not applicable to the field.
-        :param allowed_values: The values this field accepts. May be either a list of
-            allowed values, such as [0, 1], or a range - in case the field consists of
-            several bits that may all either be set or not.
-        """
-        self._name: str = name
-        self._bit_offset: int = bit_offset
-        self._bit_width: int = bit_width
-        self._default_value: int = default_value
-        self._value: int = default_value
-        self._enums: Dict[str, int] = enums
-        self._allowed_values: Union[List[int], range] = allowed_values
-        self._parent_register: Register = None
+@dataclass(frozen=True)
+class FieldDescription:
+    name: str
+    bit_offset: int
+    bit_width: int
+    default_value: int
+    enums: Dict[str, int]
+    allowed_values: Union[List[int], range]
+    element: bindings.FieldElement
 
     @classmethod
-    def from_default(cls, default_register_value: int) -> Field:
+    def from_default(cls, default_register_value: int) -> FieldDescription:
         """
         Construct a single 32 bit wide Field with a given reset value.
 
         :param default_register_value: Reset value of register.
         """
 
-        return cls("", 0, 32, default_register_value, {}, range(2**32))
+        return cls("", 0, 32, default_register_value, {}, range(2**32), None)
 
     @classmethod
     def from_element(
@@ -507,29 +485,63 @@ class Field:
         else:
             enums = {}
 
-        allowed_values = list(enums.values()) if len(enums) != 0 else range(bit_mask + 1)
+        allowed_values = (
+            list(enums.values()) if len(enums) != 0 else range(bit_mask + 1)
+        )
 
-        return cls(name, bit_offset, bit_width, default_value, enums, allowed_values)
+        return cls(
+            name, bit_offset, bit_width, default_value, enums, allowed_values, element
+        )
+
+
+class Field:
+    """
+    Internal representation of a register field.
+    Not intended for direct user interaction.
+    """
+
+    def __init__(
+        self,
+        description: FieldDescription,
+        parent: Register,
+    ):
+        """
+        Initialize the class attribute(s).
+
+        :param name: Name of field.
+        :param bit_offset: The field's bit offset from position 0. Same as bit position.
+        :param bit_width: The bit width of the field.
+        :param default_value: The value the field has at reset.
+        :param enums: A mapping between field enumerations and their corresponding raw
+            values. Field enumerations are values such as "Allowed" = 1, "NotAllowed" = 0
+            and are defined by the device's SVD file. This is allowed to be an empty map,
+            if enumerations are not applicable to the field.
+        :param allowed_values: The values this field accepts. May be either a list of
+            allowed values, such as [0, 1], or a range - in case the field consists of
+            several bits that may all either be set or not.
+        """
+        self._description: FieldDescription = description
+        self._parent_register: Register = parent
 
     @property
     def name(self) -> str:
         """Name of the field."""
-        return self._name
+        return self._description.name
 
     @property
     def default_value(self) -> int:
         """Default bitfield value."""
-        return self._default_value
+        return self._description.default_value
 
     @property
     def bit_offset(self) -> int:
         """Bit offset of the field. Same as the field's bit position."""
-        return self._bit_offset
+        return self._description.bit_offset
 
     @property
     def bit_width(self) -> int:
         """Width of bits in the field."""
-        return self._bit_width
+        return self._description.bit_width
 
     @property
     def mask(self) -> int:
@@ -539,17 +551,18 @@ class Field:
     @property
     def raw(self) -> int:
         """The raw numeric value the field contains."""
+        # TODO: take from parent
         return self._value
 
     @property
     def allowed_values(self) -> Union[List[int], range]:
         """Possible valid values for the bitfield."""
-        return self._allowed_values
+        return self._description.allowed_values
 
     @property
     def enums(self) -> Dict[str, int]:
         """Dictionary of the bitfield enumerations in the field."""
-        return self._enums
+        return self._description.enums
 
     @property
     def parent_register(self) -> Register:
@@ -576,17 +589,6 @@ class Field:
             "Enums": self.enums,
         }
         return f"Field {self.name}: {pformat(attrs)}"
-
-    def set_parent(self, register: Register):
-        """
-        Link the Field to its parent Register.
-
-        :param register: Parent Register.
-        """
-
-        if not isinstance(register, Register):
-            raise TypeError("Parent of a field must be a register")
-        self._parent_register = register
 
     def _trailing_zero_adjusted(self, value):
         """
@@ -641,7 +643,7 @@ class Field:
                     f" the bit value '{val}' ({hex(val)})."
                     " Are you sure you have an up to date .svd file?"
                 )
-            self._value = val
+            new_value = val
         else:
             if value not in self.enums:
                 raise ValueError(
@@ -649,7 +651,9 @@ class Field:
                     f" the enum '{value}'."
                     " Are you sure you have an up to date .svd file?"
                 )
-            self._value = self.enums[value]
+            new_value = self.enums[value]
+
+        self._parent_register.set(new_value, self.bit_mask)
 
     def set_from_register(self, register_value: int):
         """
@@ -658,8 +662,8 @@ class Field:
         :param register_value: Value applicable to its parent register.
         """
 
-        bit_mask = 2**self._bit_width - 1
-        value = (register_value >> self._bit_offset) & bit_mask
+        bit_mask = 2**self.bit_width - 1
+        value = (register_value >> self.bit_offset) & bit_mask
         self.set(value)
 
     def unconstrain(self):
@@ -782,9 +786,9 @@ def get_register_elements(
             # Register addresses are defined relative to the enclosing element
             base_offset = base_address + address_offset
 
-            for index, offset in iter_dim(parent_dim_props):
+            for index, offset in [(0, 0)]:# iter_dim(parent_dim_props):
                 address = base_offset + offset
-                result[address] = Register.from_element(
+                result[address] = RegisterDescription.from_element(
                     element=element,
                     name=f"{full_name}_{index}",
                     address=address,

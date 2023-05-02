@@ -189,9 +189,6 @@ class PeripheralElement(_XmlElementBinding):
 
     registers: RegistersElement
 
-    def _init(self):
-        self.reverse_lookup = None
-
 
 class PeripheralsElement(_XmlElementBinding):
     TAG = "peripherals"
@@ -222,9 +219,6 @@ class DeviceElement(_XmlElementBinding):
     resetMask: SvdIntElement
 
     peripherals: PeripheralsElement
-
-    def _init(self):
-        self.reverse_lookup = None
 
 
 class DimArrayIndexElement(_XmlElementBinding):

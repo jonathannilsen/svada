@@ -63,7 +63,7 @@ def parse(svd_path: Union[str, Path]) -> Device:
 class _ParentChildTagLookup(ET.PythonElementClassLookup):
     def __init__(self):
         self._element_classes = {
-            (None, "device"): bindings.DeviceElement
+            (None, "device"): bindings.DeviceElement,
         }
 
         for bindings_cls in bindings.ELEMENT_CLASSES:
