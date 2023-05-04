@@ -243,6 +243,6 @@ class DimensionProperties(BindingWrapper):
 
     @property
     def step(self) -> int:
-        if (dim_increment_data := self._binding.dim) is not None:
+        if (dim_increment_data := self._binding.dimIncrement) is not None:
             return dim_increment_data.pyval
         return 0

@@ -24,38 +24,11 @@ from . import util
 from .svd_enums import *
 
 
-_COMMON_PREFIXES = ["global"]
-_COMMON_SUFFIXES = ["ns", "s"]
-
-NO_COPY_IMPL = True
-
-
-def _simplify_name(name: str) -> str:
-    return util.strip_prefixes_suffixes(
-        name.lower(), _COMMON_PREFIXES, _COMMON_SUFFIXES
-    )
-
-
-def find_peripheral_node(device: ET.Element, peripheral_name: str) -> ET.Element:
-    """
-    Find the first peripheral node with a name matching peripheral_name.
-    Note that peripheral names are simplified before comparison, by removing common prefixes and
-    suffixes.
-
-    :param device: ElementTree element for the device definition in the SVD file.
-    :param peripheral_name: Name of the peripheral to instantiate. Example "uicr".
-    """
-    peripheral_name = _simplify_name(peripheral_name)
-
-    for peripheral in device.findall("peripherals/peripheral"):
-        name = _simplify_name(peripheral.findtext("name").lower())
-        if name == peripheral_name:
-            return peripheral
-
-    raise LookupError(f"Peripheral '{peripheral_name}' was not found in the device SVD")
-
-
 class Device:
+    """
+    Representation of a device.
+    TODO
+    """
     def __init__(self, device: bindings.DeviceElement):
         self._device = device
         self._reg_props = RegisterProperties(self._device)
@@ -82,10 +55,6 @@ class Device:
     def peripherals(self) -> Dict[str, Peripheral]:
         """Map of Peripherals in the device, indexed by name"""
         return self._peripherals
-
-
-class MemoryMap:
-    ...
 
 
 class Peripheral:
@@ -153,7 +122,9 @@ class Peripheral:
                 base_memory = get_memory_map(base_registers, self._reg_props)
                 memory = ChainMap(memory, base_memory)
 
-        return memory
+        return {
+            address: Register(register, self) for address, register in memory.items()
+        }
 
     @cached_property
     def _instance_map(self) -> Dict[str, int]:
@@ -164,6 +135,10 @@ class Peripheral:
     def base_address(self) -> int:
         """Base address of the peripheral space in memory."""
         return self._base_address
+
+    @base_address.setter
+    def base_address(self, value: int):
+        self._base_address = value
 
     def __getitem__(self, key: Union[int, str]) -> Register:
         """
@@ -230,7 +205,7 @@ class Peripheral:
             )
 
         affected_register = next(
-            (r for r in self._memory_map.values() if r.name == register_field[0]), None
+            (r for r in self.memory_map.values() if r.name == register_field[0]), None
         )
 
         if affected_register is None:
@@ -258,11 +233,11 @@ class Peripheral:
 
 
 @dataclass(frozen=True)
-class RegisterDescription:
+class _RegisterDescription:
     name: str
     address: int
     reg_props: RegisterProperties
-    fields: Dict[int, FieldDescription]
+    fields: Dict[int, _FieldDescription]
     element: bindings.RegisterElement
 
     @classmethod
@@ -289,12 +264,12 @@ class RegisterDescription:
             field.bit_offset: field
             for field_element in element_fields
             for field in [
-                FieldDescription.from_element(field_element, reg_props.reset_value)
+                _FieldDescription.from_element(field_element, reg_props.reset_value)
             ]
         }
 
         if len(fields) == 0:
-            fields = {0: FieldDescription.from_default(reg_props.reset_value)}
+            fields = {0: _FieldDescription.from_default(reg_props.reset_value)}
 
         return cls(
             name=name,
@@ -305,6 +280,27 @@ class RegisterDescription:
         )
 
 
+class RegisterArray:
+    def __init__(self, description: _RegisterDescription, peripheral: Peripheral):
+        self._description = description
+        self._peripheral = peripheral
+
+    def __getitem__(self, index: int) -> Register:
+        ...
+
+    def __setitem__(self, index: int, value: int):
+        ...
+
+    def __len__(self) -> int:
+        ...
+
+
+class Location:
+    # base offset
+    # dims
+    ...
+
+
 class Register:
     """
     Internal representation of a peripheral register.
@@ -313,8 +309,9 @@ class Register:
 
     def __init__(
         self,
-        description: RegisterDescription,
+        description: _RegisterDescription,
         peripheral: Peripheral,
+        index: Optional[int] = None,
     ):
         """
         Initialize the class attribute(s).
@@ -335,7 +332,7 @@ class Register:
     def fields(self) -> Dict[int, Field]:
         """Register bitfields."""
         return {
-            field.bit_offset: Field(field, self) for field in self._description.fields
+            field.bit_offset: Field(field, self) for field in self._description.fields.values()
         }
 
     @property
@@ -350,11 +347,11 @@ class Register:
 
     def raw(self) -> int:
         """The raw numeric value the register contains."""
-        return self._peripheral._values.get(self._description.address, self.reset_value)
-        #value = self.reset_value
-        #for offset, field in self.fields.items():
+        return self._peripheral._values.setdefault(self._description.address, self.reset_value)
+        # value = self.reset_value
+        # for offset, field in self.fields.items():
         #    value = (value & ~field.mask) | ((field.raw << offset) & field.mask)
-        #return value
+        # return value
 
     def __repr__(self):
         """Basic representation of the class object."""
@@ -400,7 +397,8 @@ class Register:
                 f"Register '{self.name}' does not define a field with name '{key}'"
             )
 
-        return self.fields[names_to_offsets[key]]
+        field_description = self.fields[names_to_offsets[key]]
+        return Field(field_description, self)
 
     def __setitem__(self, key: Union[int, str], value: Union[str, int]):
         """
@@ -422,13 +420,14 @@ class Register:
         #     field.set_from_register(value)
 
         if mask is not None:
-            prev_value = self._peripheral._values.get(self._description.address, self.reset_value)
+            prev_value = self._peripheral._values.get(
+                self._description.address, self.reset_value
+            )
             new_value = (prev_value & ~mask) | (value & mask)
         else:
             new_value = value
 
         self._peripheral.values[self._description.address] = new_value
-
 
     def field_iter(self) -> Iterable[Field]:
         """
@@ -438,7 +437,7 @@ class Register:
 
 
 @dataclass(frozen=True)
-class FieldDescription:
+class _FieldDescription:
     name: str
     bit_offset: int
     bit_width: int
@@ -448,7 +447,7 @@ class FieldDescription:
     element: bindings.FieldElement
 
     @classmethod
-    def from_default(cls, default_register_value: int) -> FieldDescription:
+    def from_default(cls, default_register_value: int) -> _FieldDescription:
         """
         Construct a single 32 bit wide Field with a given reset value.
 
@@ -502,7 +501,7 @@ class Field:
 
     def __init__(
         self,
-        description: FieldDescription,
+        description: _FieldDescription,
         parent: Register,
     ):
         """
@@ -520,7 +519,7 @@ class Field:
             allowed values, such as [0, 1], or a range - in case the field consists of
             several bits that may all either be set or not.
         """
-        self._description: FieldDescription = description
+        self._description: _FieldDescription = description
         self._parent_register: Register = parent
 
     @property
@@ -777,25 +776,35 @@ def get_register_elements(
         if (address_offset_data := element.addressOffset) is not None:
             address_offset = address_offset_data.pyval
         else:
-            address_offset = 0
+            address_offset = None
 
         if dim_props.length > 1:
             parent_dim_props.append(dim_props)
 
         if isinstance(element, bindings.RegisterElement):
             # Register addresses are defined relative to the enclosing element
-            base_offset = base_address + address_offset
+            if address_offset is not None:
+                base_offset = base_address + address_offset
+            else:
+                base_offset = base_address
 
-            for index, offset in [(0, 0)]:# iter_dim(parent_dim_props):
+            for index, offset in iter_dim(parent_dim_props):
                 address = base_offset + offset
-                result[address] = RegisterDescription.from_element(
+
+                result[address] = _RegisterDescription.from_element(
                     element=element,
                     name=f"{full_name}_{index}",
                     address=address,
                     reg_props=reg_props,
+                    #dim_props=copy.copy(parent_dim_props),
                 )
 
         else:  # ClusterElement
+            if address_offset is not None:
+                base_offset = address_offset
+            else:
+                base_offset = base_address
+
             get_register_elements(
                 result=result,
                 elements=element.iterchildren(
@@ -804,7 +813,7 @@ def get_register_elements(
                 base_reg_props=reg_props,
                 parent_dim_props=parent_dim_props,
                 prefix=f"{full_name}_",
-                base_address=address_offset,
+                base_address=base_offset,
             )
 
         if dim_props.length > 1:
@@ -825,5 +834,7 @@ def get_memory_map(
     :return: Mapping from addresses to Registers.
     """
     result = {}
+
     get_register_elements(result, elements, base_reg_props)
+
     return result

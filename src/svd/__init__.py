@@ -4,6 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+PACKAGE_NAME = "svada"
+
 from .parsing import (
     parse_peripheral,
     parse,
@@ -21,4 +23,9 @@ from .util import (
     to_int,
 )
 
-__version__ = "1.0.0"
+import importlib.metadata
+
+try:
+    __version__ = importlib.metadata.version(PACKAGE_NAME)
+except importlib.metadata.PackageNotFoundError:
+    raise RuntimeError(f"{PACKAGE_NAME} is not installed")
