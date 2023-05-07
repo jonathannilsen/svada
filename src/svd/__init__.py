@@ -15,7 +15,7 @@ from .peripheral import (
     Peripheral,
     Register,
     Field,
-    get_memory_map,
+    expand_registers,
     get_register_elements,
 )
 from .util import (
@@ -28,4 +28,5 @@ import importlib.metadata
 try:
     __version__ = importlib.metadata.version(PACKAGE_NAME)
 except importlib.metadata.PackageNotFoundError:
-    raise RuntimeError(f"{PACKAGE_NAME} is not installed")
+    __version__ = "0.0.0"
+    #raise RuntimeError(f"{PACKAGE_NAME} is not installed")
