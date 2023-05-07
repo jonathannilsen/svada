@@ -58,9 +58,6 @@ class Device:
         """Map of Peripherals in the device, indexed by name"""
         return self._peripherals
 
-
-
-
 # Support __delitem__ to remove registers
 # (internally this could just hide the registers if necessary)
 
@@ -513,14 +510,13 @@ class _FieldDescription(NamedTuple):
     name: str
     bit_offset: int
     bit_width: int
-    default_value: int
     enums: Dict[str, int]
     allowed_values: Union[List[int], range]
     element: bindings.FieldElement
 
     @classmethod
     def from_element(
-        cls, element: bindings.FieldElement, default_register_value: int
+        cls, element: bindings.FieldElement
     ) -> Field:
         """
         Construct a Field class from an SVD element.
@@ -531,10 +527,8 @@ class _FieldDescription(NamedTuple):
         """
 
         name = element.name.pyval
+        # FIXME move get_bit_range() back to util function
         bit_offset, bit_width = element.get_bit_range()
-
-        bit_mask = 2**bit_width - 1
-        default_value = (default_register_value >> bit_offset) & bit_mask
 
         # We do not support "do not care" bits, as by marking bits "x", see
         # SVD docs "/device/peripherals/peripheral/registers/.../enumeratedValue"
@@ -547,11 +541,12 @@ class _FieldDescription(NamedTuple):
             enums = {}
 
         allowed_values = (
-            list(enums.values()) if len(enums) != 0 else range(bit_mask + 1)
+            set(enums.values()) if enums else range(2**bit_width)
         )
 
         return cls(
-            name, bit_offset, bit_width, default_value, enums, allowed_values, element
+            name=name, bit_offset=bit_offset, bit_width=bit_width, enums=enums,
+            allowed_values=allowed_values, element=element
         )
 
 
@@ -560,11 +555,12 @@ class Field:
     Internal representation of a register field.
     Not intended for direct user interaction.
     """
+    __slots__ = ["_description", "_register"]
 
     def __init__(
         self,
         description: _FieldDescription,
-        parent: Register,
+        register: Register,
     ):
         """
         Initialize the class attribute(s).
@@ -582,7 +578,7 @@ class Field:
             several bits that may all either be set or not.
         """
         self._description: _FieldDescription = description
-        self._parent_register: Register = parent
+        self._register: Register = register
 
     @property
     def name(self) -> str:
@@ -592,8 +588,9 @@ class Field:
     @property
     def default_value(self) -> int:
         """Default bitfield value."""
-        # FIXME: take from parent
-        return self._description.default_value
+        default_register_value = self._register.reset_value
+        field_default_value = (default_register_value >> self.bit_offset) & self.bit_mask
+        return field_default_value
 
     @property
     def bit_offset(self) -> int:
@@ -629,7 +626,7 @@ class Field:
     @property
     def parent_register(self) -> Register:
         """Register to which the field belongs."""
-        return self._parent_register
+        return self._register
 
     @property
     def modified(self) -> bool:
@@ -701,7 +698,7 @@ class Field:
 
             if val not in self.allowed_values:
                 raise ValueError(
-                    f"Field '{self._parent_register.name}.{self.name}' does not accept"
+                    f"Field '{self._register.name}.{self.name}' does not accept"
                     f" the bit value '{val}' ({hex(val)})."
                     " Are you sure you have an up to date .svd file?"
                 )
@@ -709,24 +706,13 @@ class Field:
         else:
             if value not in self.enums:
                 raise ValueError(
-                    f"Field '{self._parent_register.name}.{self.name}' does not accept"
+                    f"Field '{self._register.name}.{self.name}' does not accept"
                     f" the enum '{value}'."
                     " Are you sure you have an up to date .svd file?"
                 )
             new_value = self.enums[value]
 
-        self._parent_register.set(new_value, self.bit_mask)
-
-    def set_from_register(self, register_value: int):
-        """
-        Set the field value based on a value applicable to its containing register.
-
-        :param register_value: Value applicable to its parent register.
-        """
-
-        bit_mask = 2**self.bit_width - 1
-        value = (register_value >> self.bit_offset) & bit_mask
-        self.set(value)
+        self._register.set(new_value, self.bit_mask)
 
     def unconstrain(self):
         """
@@ -808,9 +794,11 @@ def _simplify_register_name(name: str) -> str:
     )
 
 
-def _expand_fields(element: Iterable[bindings.FieldElement]):
-    ...
-
+def _expand_element_fields(element: Iterable[bindings.RegisterElement]):
+    if (fields_element := element.fields) is not None:
+        field_desc = (_FieldDescription.from_element(e) for e in fields_element.iterchildren())
+        return {desc.name: desc for desc in field_desc}
+    return None
 
 # TODO: maybe cache the leaf nodes here
 def get_register_elements(
@@ -857,7 +845,7 @@ def get_register_elements(
 
             min_address = address
             registers = None
-            fields = None
+            fields = _expand_element_fields(element)
 
         else:  # ClusterElement
             if address_offset is not None:
