@@ -106,7 +106,7 @@ class Peripheral:
         TODO: option for leaf-only? or have a different function for recursive
         """
         for description in self._register_tree.values():
-            register = _create_register(description, self)
+            register = _create_register(description, peripheral=self)
             yield from register.memory_iter()
 
     # TODO: register_walk() ?
@@ -136,7 +136,7 @@ class Peripheral:
             # If the register properties are equal, then it is possible to reuse all the immutable
             # properties from the base peripheral.
             if self._base_peripheral._reg_props == self._reg_props:
-                registers = ChainMap(registers, self._base_peripheral._registers)
+                registers = ChainMap(registers, self._base_peripheral._register_tree)
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
             elif (
@@ -183,7 +183,7 @@ class Peripheral:
             return existing_register
 
         try:
-            register = _create_register(self._register_tree[key], self)
+            register = _create_register(self._register_tree[key], peripheral=self)
             self._registers[key] = register
             return register
         except LookupError as e:
@@ -265,11 +265,11 @@ class _RegisterDescription(NamedTuple):
 
 
 class _RegisterBase:
-    __slots__ = ["_description", "_peripheral", "_qualified_prefix", "_offset"]
+    __slots__ = ["_description", "_peripheral", "_offset", "_qualified_prefix", "_index"]
 
     # FIXME: need to pass down parent offset
     def __init__(
-        self, description, peripheral, qualified_prefix: str = "", offset=None
+        self, description, peripheral, offset=0, index = None, qualified_prefix: str = "", 
     ):
         """
         Initialize the class attribute(s).
@@ -280,15 +280,16 @@ class _RegisterBase:
         """
         self._description: _RegisterDescription = description
         self._peripheral: Peripheral = peripheral
-        self._qualified_prefix: str = qualified_prefix
+        self._index = index
         # FIXME: change the name of this - it's really confusing
         self._offset = offset
+        self._qualified_prefix: str = qualified_prefix
 
     @property
     def name(self) -> str:
         """Name of the register."""
-        if self._offset is not None:
-            return f"{self._description.name}[{self._offset.index}]"
+        if self._index is not None:
+            return f"{self._description.name}[{self._index}]"
         return self._description.name
 
     @property
@@ -301,9 +302,7 @@ class _RegisterBase:
 
     @property
     def offset(self) -> int:
-        if self._offset is not None:
-            return self._description.offset + self._offset.offset
-        return self._description.offset
+        return self._description.offset + self._offset
 
     def memory_iter(self):
         if isinstance(self, Iterable):
@@ -319,17 +318,14 @@ class _RegisterBase:
         return f"{self.__class__.__name__} '{self.full_name}' @ 0x{self.address:08x}"
 
 
-class Offset(NamedTuple):
-    index: int
-    offset: int
-
-
 class _DimensionedRegister(_RegisterBase):
     __slots__ = ["_offsets", "_array"]
 
     member_type: type
     _description: _RegisterDescription
     _peripheral: Peripheral
+    _offset: int
+    _index: int
     _qualified_prefix: str
 
     def __init__(self, description: _RegisterDescription, *args, **kwargs):
@@ -345,15 +341,14 @@ class _DimensionedRegister(_RegisterBase):
         if (existing_child := self._array[index]) is not None:
             return existing_child
 
-        offset = Offset(index, self._offsets[index])
         return self.member_type(
             self._description,
             self._peripheral,
+            offset=self._offsets[index] + self.offset,
+            index=index,
             qualified_prefix=self._qualified_prefix,
-            offset=offset,
         )
 
-    # FIXME: iter type breaks with how mapping does it
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
@@ -382,9 +377,9 @@ class RegisterStruct(_RegisterBase, Mapping):
             child_description = self._description.registers[name]
             return _create_register(
                 child_description,
-                self._peripheral,
+                peripheral=self._peripheral,
+                offset=self.offset,
                 qualified_prefix=f"{self.full_name}.",
-                offset=self._offset
             )
         except LookupError as e:
             raise LookupError(
@@ -397,6 +392,7 @@ class RegisterStruct(_RegisterBase, Mapping):
     def __len__(self) -> int:
         return len(self._description.registers)
 
+    # FIXME: iter type breaks with how mapping does it
     def __iter__(self):
         for key in self._description.registers:
             yield self[key]
@@ -525,15 +521,15 @@ class RegisterArray(_DimensionedRegister):
 RegisterType = Union[Register, RegisterStruct]
 
 
-def _create_register(description: _RegisterDescription, peripheral: Peripheral, qualified_prefix: str = "", offset=None):
+def _create_register(description: _RegisterDescription, index: Optional[int]=None, **kwargs):
     if description.registers is not None:
-        if description.dim_props is not None and offset is None:
-            return RegisterStructArray(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix)
-        return RegisterStruct(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix, offset=offset)
+        if description.dim_props is not None and index is None:
+            return RegisterStructArray(description=description, **kwargs)
+        return RegisterStruct(description=description, index=index, **kwargs)
     else:
-        if description.dim_props is not None and offset is None:
-            return RegisterArray(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix)
-        return Register(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix, offset=offset)
+        if description.dim_props is not None and index is None:
+            return RegisterArray(description=description, **kwargs)
+        return Register(description=description, index=index, **kwargs)
 
 
 class _FieldDescription(NamedTuple):
