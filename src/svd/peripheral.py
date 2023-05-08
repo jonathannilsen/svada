@@ -31,6 +31,7 @@ class Device:
     Representation of a device.
     TODO
     """
+
     def __init__(self, device: bindings.DeviceElement):
         self._device = device
         self._reg_props = RegisterProperties(self._device)
@@ -58,8 +59,10 @@ class Device:
         """Map of Peripherals in the device, indexed by name"""
         return self._peripherals
 
+
 # Support __delitem__ to remove registers
 # (internally this could just hide the registers if necessary)
+
 
 class Peripheral:
     """
@@ -90,7 +93,7 @@ class Peripheral:
         self._reg_props: RegisterProperties = RegisterProperties(
             self._peripheral, base=base_reg_props
         )
-        #self._registers = {}
+        self._registers = {}
 
     @property
     def name(self) -> str:
@@ -98,15 +101,12 @@ class Peripheral:
         return self._name
 
     # FIXME: iterator?
-    def memory_iter(self) -> Iterable[Tuple[int, Register]]:
+    def memory_iter(self):
         """Iterator over registers in the peripheral
-        TODO: option for leaf-only?
+        TODO: option for leaf-only? or have a different function for recursive
         """
         for description in self._register_tree.values():
-            if description.registers is None:
-                register = Register(description, self)
-            else:
-                register = RegisterStruct(description, self)
+            register = _create_register(description, self)
             yield from register.memory_iter()
 
     # TODO: register_walk() ?
@@ -179,10 +179,15 @@ class Peripheral:
                 )
             return self.memory_map[key]
 
-        if key not in self._instance_map:
-            raise LookupError(f"Peripheral does not contain a register named '{key}'")
+        if (existing_register := self._registers.get(key)) is not None:
+            return existing_register
 
-        return self.memory_map[self._instance_map[key]]
+        try:
+            register = _create_register(self._register_tree[key], self)
+            self._registers[key] = register
+            return register
+        except LookupError as e:
+            raise LookupError(f"Peripheral does not contain a register named '{key}'") from e
 
     def __setitem__(self, key: Union[int, str], value: int):
         """
@@ -251,58 +256,21 @@ class Peripheral:
 
 class _RegisterDescription(NamedTuple):
     name: str
-    full_name: str
     offset: int
     reg_props: RegisterProperties
-    dim_props: DimensionProperties
+    dim_props: Optional[DimensionProperties]
     registers: Dict[str, _RegisterDescription]
     fields: Dict[str, _FieldDescription]
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
-    @classmethod
-    def from_element(
-        cls,
-        name: str,
-        offset: int,
-        reg_props: RegisterProperties,
-        element: bindings.RegisterElement,
-    ) -> Register:
-        """
-        Construct a Register class from an SVD element.
 
-        :param element: ElementTree representation of an SVD Register element.
-        :param name: Name of register.
-        :param reset_value: Reset value of register.
-        """
-        if (fields := element.fields) is not None:
-            element_fields = fields.iterchildren()
-        else:
-            element_fields = []
+class _RegisterBase:
+    __slots__ = ["_description", "_peripheral", "_qualified_prefix", "_offset"]
 
-        fields = {
-            field.bit_offset: field
-            for field_element in element_fields
-            for field in [
-                _FieldDescription.from_element(field_element, reg_props.reset_value)
-            ]
-        }
-
-        if len(fields) == 0:
-            fields = {0: _FieldDescription.from_default(reg_props.reset_value)}
-
-        return cls(
-            name=name,
-            offset=offset,
-            reg_props=reg_props,
-            fields=fields,
-            element=element,
-        )
-
-
-class _RegisterBase(Mapping):
-    __slots__ = ["_description", "_peripheral", "_offset"]
-
-    def __init__(self, description, peripheral, offset=None):
+    # FIXME: need to pass down parent offset
+    def __init__(
+        self, description, peripheral, qualified_prefix: str = "", offset=None
+    ):
         """
         Initialize the class attribute(s).
 
@@ -310,8 +278,10 @@ class _RegisterBase(Mapping):
         :param fields: Dictionary of bitfields present in the register
         :param reset_value: Register reset value
         """
-        self._description = description
-        self._peripheral = peripheral
+        self._description: _RegisterDescription = description
+        self._peripheral: Peripheral = peripheral
+        self._qualified_prefix: str = qualified_prefix
+        # FIXME: change the name of this - it's really confusing
         self._offset = offset
 
     @property
@@ -323,9 +293,7 @@ class _RegisterBase(Mapping):
 
     @property
     def full_name(self) -> str:
-        if self._offset is not None:
-            return f"{self._description.full_name}[{self._offset.index}]"
-        return self._description.full_name
+        return f"{self._qualified_prefix}{self.name}"
 
     @property
     def address(self) -> int:
@@ -338,62 +306,104 @@ class _RegisterBase(Mapping):
         return self._description.offset
 
     def memory_iter(self):
-        for register in self:
-            yield (register.address, register)
-
-    def __getitem__(self, index: int):
-        if index >= len(self):
-            raise IndexError(f"index {index} out of range for '{self._description.name}' "
-                             f"with length '{len(self)}'")
-        offset = Offset(index, index * self._description.dim_props.step)
-        return self._child_type(self._description, self._peripheral, offset=offset)
-
-    def __iter__(self):
-        cls = type(self) 
-        for offset in self._description.dim_props:
-            yield cls(self._description, self._peripheral, offset=offset)
-
-    def __len__(self) -> int:
-        return self._description.dim_props.length
+        if isinstance(self, Iterable):
+            for child in self:
+                yield from child.memory_iter()
+        else:
+            yield (self.address, self)
 
     def __repr__(self) -> str:
-        return str(self) # FIXME
+        return str(self)  # FIXME
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__} '{self.full_name}' @ 0x{self.address:08x}"
 
 
-class RegisterStruct(_RegisterBase):
+class Offset(NamedTuple):
+    index: int
+    offset: int
+
+
+class _DimensionedRegister(_RegisterBase):
+    __slots__ = ["_offsets", "_array"]
+
+    member_type: type
+    _description: _RegisterDescription
+    _peripheral: Peripheral
+    _qualified_prefix: str
+
+    def __init__(self, description: _RegisterDescription, *args, **kwargs):
+        self._offsets = description.dim_props.to_range()
+        self._array = [None for _ in range(len(self._offsets))]
+        super().__init__(description, *args, **kwargs)
+
+    def memory_iter(self):
+        for child in self:
+            yield from child.memory_iter()
+
+    def __getitem__(self, index: int):
+        if (existing_child := self._array[index]) is not None:
+            return existing_child
+
+        offset = Offset(index, self._offsets[index])
+        return self.member_type(
+            self._description,
+            self._peripheral,
+            qualified_prefix=self._qualified_prefix,
+            offset=offset,
+        )
+
+    # FIXME: iter type breaks with how mapping does it
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __len__(self) -> int:
+        return len(self._array)
+
+
+class RegisterStruct(_RegisterBase, Mapping):
+    __slots__ = ["_registers"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._registers = {}
+
     def memory_iter(self):
         for register in self:
-            yield (register.address, register)
+            yield from register.memory_iter()
 
-    def __getitem__(self, key: Union[str, int]):
-        if self._description.dim_props.length > 1 and self._offset is None:
-            return super().__getitem__(key)
-
+    def __getitem__(self, name: str):
         # TODO: could implement a lookup in cached regs in the parent peripheral here
-        try:
-            child_description = self._description.registers[key]
-            child_type = RegisterStruct if child_description.registers else Register
-            return child_type(child_description, self._peripheral)            
-        except LookupError as e:
-            raise LookupError(f"no register named {key} in register structure {self.name}") from e
+        if (existing_register := self._registers.get(name)) is not None:
+            return existing_register
 
-    def __setitem__(self, key: int, value: int):
-        self[key].value = value
+        try:
+            child_description = self._description.registers[name]
+            return _create_register(
+                child_description,
+                self._peripheral,
+                qualified_prefix=f"{self.full_name}.",
+                offset=self._offset
+            )
+        except LookupError as e:
+            raise LookupError(
+                f"no register named {name} in register structure {self.name}"
+            ) from e
+
+    def __setitem__(self, name: str, value: int):
+        self[name].value = value
 
     def __len__(self) -> int:
         return len(self._description.registers)
 
     def __iter__(self):
-        if self._description.dim_props.length > 1 and self._offset is None:
-            yield from super().__iter__()
+        for key in self._description.registers:
+            yield self[key]
 
-        else:
-            # FIXME: this is not OK, refactor
-            for key in self._description.registers:
-                yield from self[key]
+
+class RegisterStructArray(_DimensionedRegister):
+    member_type = RegisterStruct
 
 
 class Register(_RegisterBase):
@@ -401,11 +411,19 @@ class Register(_RegisterBase):
     Internal representation of a peripheral register.
     Not intended for direct user interaction.
     """
+    __slots__ = ["_fields"]
+
+    # FIXME
+    #def __init__(self, *):
+    #    ...
+    #    self._fields = {}
+
     @cached_property
     def fields(self) -> Dict[int, Field]:
         """Register bitfields."""
         return {
-            field.bit_offset: Field(field, self) for field in self._description.fields.values()
+            field.bit_offset: Field(field, self)
+            for field in self._description.fields.values()
         }
 
     @property
@@ -420,19 +438,21 @@ class Register(_RegisterBase):
 
     def raw(self) -> int:
         """The raw numeric value the register contains."""
-        return self._peripheral._values.setdefault(self._description.address, self.reset_value)
+        return self._peripheral._values.setdefault(
+            self._description.address, self.reset_value
+        )
         # value = self.reset_value
         # for offset, field in self.fields.items():
         #    value = (value & ~field.mask) | ((field.raw << offset) & field.mask)
         # return value
 
-    #def __repr__(self):
+    # def __repr__(self):
     #    """Basic representation of the class object."""
     #    return f"Register {self.name} {'(modified) ' if self.modified else ''}= {hex(self.raw)}"
-#
-    #def __str__(self):
+    #
+    # def __str__(self):
     #    """String representation of the class."""
-#
+    #
     #    attrs = {
     #        "modified": self.modified,
     #        "value": self.raw,
@@ -496,15 +516,25 @@ class Register(_RegisterBase):
         """
         return iter(self.fields.values())
 
-    # FIXME: why... need to refactor this
-    def __iter__(self):
-        if self._description.dim_props.length > 1 and self._offset is None:
-            yield from super().__iter__()
-        else:
-            yield self
+
+class RegisterArray(_DimensionedRegister):
+    member_type = Register
+
 
 
 RegisterType = Union[Register, RegisterStruct]
+
+
+def _create_register(description: _RegisterDescription, peripheral: Peripheral, qualified_prefix: str = "", offset=None):
+    if description.registers is not None:
+        if description.dim_props is not None and offset is None:
+            return RegisterStructArray(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix)
+        return RegisterStruct(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix, offset=offset)
+    else:
+        if description.dim_props is not None and offset is None:
+            return RegisterArray(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix)
+        return Register(description=description, peripheral=peripheral, qualified_prefix=qualified_prefix, offset=offset)
+
 
 class _FieldDescription(NamedTuple):
     name: str
@@ -515,9 +545,7 @@ class _FieldDescription(NamedTuple):
     element: bindings.FieldElement
 
     @classmethod
-    def from_element(
-        cls, element: bindings.FieldElement
-    ) -> Field:
+    def from_element(cls, element: bindings.FieldElement) -> Field:
         """
         Construct a Field class from an SVD element.
 
@@ -540,13 +568,15 @@ class _FieldDescription(NamedTuple):
         else:
             enums = {}
 
-        allowed_values = (
-            set(enums.values()) if enums else range(2**bit_width)
-        )
+        allowed_values = set(enums.values()) if enums else range(2**bit_width)
 
         return cls(
-            name=name, bit_offset=bit_offset, bit_width=bit_width, enums=enums,
-            allowed_values=allowed_values, element=element
+            name=name,
+            bit_offset=bit_offset,
+            bit_width=bit_width,
+            enums=enums,
+            allowed_values=allowed_values,
+            element=element,
         )
 
 
@@ -555,6 +585,7 @@ class Field:
     Internal representation of a register field.
     Not intended for direct user interaction.
     """
+
     __slots__ = ["_description", "_register"]
 
     def __init__(
@@ -589,7 +620,9 @@ class Field:
     def default_value(self) -> int:
         """Default bitfield value."""
         default_register_value = self._register.reset_value
-        field_default_value = (default_register_value >> self.bit_offset) & self.bit_mask
+        field_default_value = (
+            default_register_value >> self.bit_offset
+        ) & self.bit_mask
         return field_default_value
 
     @property
@@ -795,16 +828,19 @@ def _simplify_register_name(name: str) -> str:
 
 
 def _expand_element_fields(element: Iterable[bindings.RegisterElement]):
+    # FIXME: sorted?
     if (fields_element := element.fields) is not None:
-        field_desc = (_FieldDescription.from_element(e) for e in fields_element.iterchildren())
+        field_desc = (
+            _FieldDescription.from_element(e) for e in fields_element.iterchildren()
+        )
         return {desc.name: desc for desc in field_desc}
     return None
+
 
 # TODO: maybe cache the leaf nodes here
 def get_register_elements(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: RegisterProperties,
-    prefix: str = "",
     base_address: int = 0,
 ) -> Tuple[Dict[str, RegisterType], int]:
     """
@@ -826,10 +862,9 @@ def get_register_elements(
 
     for element in elements:
         name = _simplify_register_name(element.name.pyval)
-        full_name = f"{prefix}{name}"
 
         reg_props = RegisterProperties(element, base=base_reg_props)
-        dim_props = DimensionProperties(element)
+        dim_props = DimensionProperties.from_binding(element)
 
         if (address_offset_data := element.addressOffset) is not None:
             address_offset = address_offset_data.pyval
@@ -858,7 +893,6 @@ def get_register_elements(
                     bindings.RegisterElement.TAG, bindings.ClusterElement.TAG
                 ),
                 base_reg_props=reg_props,
-                prefix=f"{full_name}.",
                 base_address=address,
             )
 
@@ -866,11 +900,10 @@ def get_register_elements(
                 min_address = min(address, min_child_address)
 
             fields = None
-            
+
         description = _RegisterDescription(
             element=element,
             name=name,
-            full_name=full_name,
             offset=address,
             reg_props=reg_props,
             dim_props=dim_props,
@@ -906,6 +939,5 @@ def expand_registers(
     :return: Mapping from addresses to Registers.
     """
     result, _ = get_register_elements(elements, base_reg_props)
-
 
     return result

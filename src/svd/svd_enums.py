@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 from functools import cached_property
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Sequence
 
 from .util import CaseInsensitiveStrEnum, BindingWrapper
 
@@ -234,12 +234,13 @@ class RegisterProperties:
                 self.reset_mask == other.reset_mask)
 
 
-class Offset(NamedTuple):
-    index: int
-    offset: int
-
-
 class DimensionProperties(BindingWrapper):
+    @classmethod
+    def from_binding(cls, binding) -> Optional[DimensionProperties]:
+        if binding.dim is None:
+            return None
+        return DimensionProperties(binding)
+
     @property
     def length(self) -> int:
         if (dim_data := self._binding.dim) is not None:
@@ -252,11 +253,5 @@ class DimensionProperties(BindingWrapper):
             return dim_increment_data.pyval
         return 0
 
-    # TODO: consider whether this should be a range
-    def __iter__(self):
-        step = self.step
-        for i in range(self.length):
-            yield Offset(i, i * step)
-
-    def __len__(self):
-        return self.length
+    def to_range(self) -> Sequence[int]:
+        return range(0, self.length * self.step + 1, self.step)
