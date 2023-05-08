@@ -101,7 +101,7 @@ class Peripheral:
         return self._name
 
     # FIXME: iterator?
-    def memory_iter(self):
+    def memory_iter(self, leaf_only: bool = True):
         """Iterator over registers in the peripheral
         TODO: option for leaf-only? or have a different function for recursive
         """
@@ -267,7 +267,6 @@ class _RegisterDescription(NamedTuple):
 class _RegisterBase:
     __slots__ = ["_description", "_peripheral", "_offset", "_qualified_prefix", "_index"]
 
-    # FIXME: need to pass down parent offset
     def __init__(
         self, description, peripheral, offset=0, index = None, qualified_prefix: str = "", 
     ):
