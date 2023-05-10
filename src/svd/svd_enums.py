@@ -254,4 +254,4 @@ class DimensionProperties(BindingWrapper):
         return 0
 
     def to_range(self) -> Sequence[int]:
-        return range(0, self.length * self.step + 1, self.step)
+        return range(0, (self.length - 1) * self.step + 1, self.step)
