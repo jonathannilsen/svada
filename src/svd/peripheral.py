@@ -203,7 +203,7 @@ class Peripheral(Mapping):
             self._registers[name] = register
             return register
         except LookupError as e:
-            raise LookupError(
+            raise KeyError(
                 f"Peripheral does not contain a register named '{name}'"
             ) from e
 
@@ -259,10 +259,10 @@ class _RegisterBase:
 
     def __init__(
         self,
-        description,
-        peripheral,
-        instance_offset=0,
-        index=None,
+        description: _RegisterDescription,
+        peripheral: Peripheral,
+        instance_offset: int =0,
+        index: Optional[int] =None,
         qualified_prefix: str = "",
     ):
         """
@@ -274,8 +274,8 @@ class _RegisterBase:
         """
         self._description: _RegisterDescription = description
         self._peripheral: Peripheral = peripheral
-        self._index = index
-        self._instance_offset = instance_offset
+        self._instance_offset: int = instance_offset
+        self._index: Optional[int] = index
         self._qualified_prefix: str = qualified_prefix
 
     @property
@@ -315,14 +315,9 @@ class _DimensionedRegister(_RegisterBase, Sequence):
     __slots__ = ["_array_offsets", "_array"]
 
     member_type: type
-    _description: _RegisterDescription
-    _peripheral: Peripheral
-    _instance_offset: int
-    _index: int
-    _qualified_prefix: str
 
     def __init__(self, description: _RegisterDescription, *args, **kwargs):
-        self._array_offsets = description.dim_props.to_range()
+        self._array_offsets: Sequence[int] = description.dim_props.to_range()
         self._array = [None for _ in range(len(self._array_offsets))]
         super().__init__(description, *args, **kwargs)
 
@@ -380,7 +375,7 @@ class RegisterStruct(_RegisterBase, Mapping):
         try:
             child_description = self._description.registers[name]
         except LookupError as e:
-            raise LookupError(
+            raise KeyError(
                 f"Register structure {self.full_name} does not contain a register named {name}"
             ) from e
 
@@ -452,7 +447,7 @@ class Register(_RegisterBase, Mapping):
         :param value: New value for the register.
         :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
         """
-        if log2(value) > self._description.reg_props.size:
+        if value > 0 and log2(value) > self._description.reg_props.size:
             raise ValueError(
                 f"Value {hex(value)} is too large for {self._description.reg_props.size}-bit "
                 f"register {self.full_name}."
@@ -498,7 +493,7 @@ class Register(_RegisterBase, Mapping):
             field_description = self._description.fields[key]
             return Field(field_description, self)
         except LookupError as e:
-            raise LookupError(
+            raise KeyError(
                 f"Register '{self.full_name}' does not define a field with name '{key}'"
             ) from e
 
@@ -518,14 +513,14 @@ class Register(_RegisterBase, Mapping):
 
     def __repr__(self):
         """Basic representation of the class object."""
-        return f"{super().__str__()} {'(modified) ' if self.modified else ''}= {hex(self.value)}"
+        return f"{super().__str__()} {'(modified) ' if self.modified else ''}= 0x{self.value:08x}"
 
     def __str__(self):
         """String representation of the class."""
 
         attrs = {
             "Modified": self.modified,
-            "Value": self.value,
+            "Value": f"{self.value:08x}",
             "Fields": {k: str(v) for k, v in self.items()},  # FIXME: just self?
         }
         return f"{super().__str__()}: {pformat(attrs)}"
@@ -686,7 +681,7 @@ class Field:
                 )
             resolved_value = self.enums[new_value]
 
-        self._register.set_value(resolved_value, self.mask)
+        self._register.set_value(resolved_value << self.bit_offset, self.mask)
 
     @property
     def reset_value(self) -> int:
@@ -737,7 +732,7 @@ class Field:
 
     def _extract_value_from_register(self, register_value: int) -> int:
         """Extract the field value from a register value."""
-        return (register_value >> self.bit_offset) & self.mask
+        return (register_value & self.mask) >> self.bit_offset
 
     def _trailing_zero_adjusted(self, value):
         """
@@ -771,7 +766,7 @@ class Field:
 
     def __repr__(self):
         """Basic representation of the class."""
-        return f"Field {self.name} {'(modified) ' if self.modified else ''}= {hex(self.raw)}"
+        return f"Field {self.name} {'(modified) ' if self.modified else ''}= {hex(self.value)}"
 
     def __str__(self):
         """String representation of the class."""
