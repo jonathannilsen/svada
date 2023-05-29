@@ -19,6 +19,7 @@ from itertools import chain, product
 from math import log2
 from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional, Set
 from pprint import pformat
+from time import perf_counter_ns
 
 import lxml.etree as ET
 
@@ -118,6 +119,9 @@ class Peripheral(Mapping):
         self._values = {}
         self._registers: Dict[str, RegisterType] = {}
 
+        # FIXME: remove
+        self._times = {}
+
     @property
     def name(self) -> str:
         """Name of the peripheral."""
@@ -142,8 +146,15 @@ class Peripheral(Mapping):
         :param absolute_addresses: If true,
         :param leaf_only: Only
         """
+        t_start = perf_counter_ns()
+        register_tree = self._register_tree
+        t_recurse_start = perf_counter_ns()
         for register_name in self._register_tree:
             yield from self[register_name].recursive_iter(leaf_only)
+        t_end = perf_counter_ns()
+        t_tree = t_recurse_start - t_start
+        t_recurse = t_end - t_recurse_start
+        print(f"derived: {self._base_peripheral is not None}, tree time: {t_tree}ns, recurse time: {t_recurse}ns, fraction: {t_recurse / t_tree:.2f} ({t_tree / t_recurse:.2f})")
 
     def memory_iter(self, absolute_addresses: bool = True):
         """TODO"""
@@ -241,8 +252,8 @@ class _RegisterDescription(NamedTuple):
     start_offset: int
     reg_props: RegisterProperties
     dim_props: Optional[DimensionProperties]
-    registers: Dict[str, _RegisterDescription]
-    fields: Dict[str, _FieldDescription]
+    registers: Optional[Dict[str, _RegisterDescription]]
+    fields: Optional[Dict[str, _FieldDescription]]
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
 
@@ -523,6 +534,7 @@ class Register(_RegisterBase, Mapping):
             "Value": f"{self.value:08x}",
             "Fields": {k: str(v) for k, v in self.items()},  # FIXME: just self?
         }
+
         return f"{super().__str__()}: {pformat(attrs)}"
 
 
@@ -563,7 +575,7 @@ class _FieldDescription(NamedTuple):
     bit_offset: int
     bit_width: int
     enums: Dict[str, int]
-    allowed_values: Union[Set[int], range]
+    allowed_values: Sequence[int]
     element: bindings.FieldElement
 
     @classmethod
@@ -603,10 +615,7 @@ class _FieldDescription(NamedTuple):
 
 
 class Field:
-    """
-    Internal representation of a register field.
-    Not intended for direct user interaction.
-    """
+    """Register field instance"""
 
     __slots__ = ["_description", "_register", "_allowed_values"]
 

@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+import functools
+from dataclasses import dataclass
+from typing import Any, Optional, Tuple, get_type_hints
 
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
@@ -18,7 +20,6 @@ from . import util
 # TODO: attributes
 # TODO: validation
 # TODO: assert that element class is found
-
 
 class _XmlDataElementBinding(objectify.ObjectifiedDataElement):
     def get_pyval(self, default: Optional[Any] = None) -> Any:
@@ -90,90 +91,220 @@ class SvdIntElement(objectify.IntElement):
         self._setValueParser(util.to_int)
 
 
+class _Missing:
+    ...
 
-class _XmlElementBinding(objectify.ObjectifiedElement):
-    def __getattr__(self, name: str) -> Any:
-        """
-        Get the attribute with the given name.
-        Overridden to make it so properties that have annotations in the class
-        default to returning None rather than raising an exception.
-        """
+
+MISSING = _Missing
+
+
+@dataclass
+class _SvdPropertyInfo:
+    name: str
+    klass: type
+    default: Any
+
+
+class _Elem(_SvdPropertyInfo):
+    ...
+
+
+class _Attr(_SvdPropertyInfo):
+    ...
+
+
+def elem(name: str, klass: type = MISSING, /, *, default: Optional[Any] = MISSING, ) -> _Elem:
+    return _Elem(name, klass, default)
+
+
+def attr(name: str, klass: type = MISSING, /, *, default: Optional[Any] = MISSING,) -> _Attr:
+    return _Attr(name, klass, default)
+
+
+def binding(klass: type) -> type:
+    dict_arg = {}
+    for field_name, _field_type in get_type_hints(klass).items():
         try:
-            # TODO: consider whether this should just return the pyval
-            return super().__getattr__(name)
+            prop_info = getattr(klass, field_name)
         except AttributeError:
-            if name not in self.__annotations__:
-                raise
-            return None
+            continue
+        if isinstance(prop_info, _Elem):
+            def getter(self):
+                try:
+                    svd_obj = getattr(super(klass, self), prop_info.name)
+                except AttributeError:
+                    if prop_info.default == MISSING:
+                        raise
+                    return prop_info.default
+
+                if issubclass(prop_info.klass, objectify.ObjectifiedDataElement):
+                    return svd_obj.pyval
+                else:
+                    return svd_obj
+
+        elif isinstance(prop_info, _Attr):
+            raise NotImplementedError("Attributes are not implemented")
+        else:
+            continue
+
+        dict_arg[field_name] = property(fget=getter)
+
+    new_klass = type(
+        klass.__name__, (objectify.ObjectifiedElement, klass), dict_arg)
+    functools.update_wrapper(new_klass, klass)
+
+    return new_klass
 
 
-class RangeWriteConstraintElement(_XmlElementBinding):
+@binding
+class RangeWriteConstraintElement:
     TAG = "range"
 
-    minimum: SvdIntElement
-    maximum: SvdIntElement
+    minimum: int = elem("minimum", SvdIntElement)
+    maximum: int = elem("maximum", SvdIntElement)
 
 
-class WriteConstraintElement(_XmlElementBinding):
+@binding
+class WriteConstraintElement:
     TAG = "writeConstraint"
 
-    writeAsRead: BoolElement
-    useEnumeratedValues: BoolElement
-    range: RangeWriteConstraintElement
+    writeAsRead: bool = elem("writeAsRead", BoolElement)
+    useEnumeratedValues: bool = elem("useEnumeratedValues", BoolElement)
+    range: RangeWriteConstraintElement = elem(
+        "range", RangeWriteConstraintElement)
 
 
-class SauRegionElement(_XmlElementBinding):
+@binding
+class SauRegionElement:
     TAG = "region"
 
-    base: SvdIntElement
-    limit: SvdIntElement
-    access: SauAccessElement
-    enabled: BoolElement
+    base: int = elem("base", SvdIntElement)
+    limit: int = elem("limit", SvdIntElement)
+    access: SauAccessElement = elem("access", SauAccessElement)
+    enabled: bool = elem("enabled", BoolElement, default=True)
 
 
-class SauRegionsConfigElement(_XmlElementBinding):
+@binding
+class SauRegionsConfigElement:
     TAG = "sauRegions"
 
-    region: SauRegionElement
+    region: SauRegionElement = elem("region", SauRegionElement)
 
 
-class CpuElement(_XmlElementBinding):
+@binding
+class CpuElement:
     TAG = "cpu"
 
-    name: CpuNameElement
-    revision: StringElement
-    endian: EndianTypeElement
-    mpuPresent: BoolElement
-    fpuPresent: BoolElement
-    fpuDP: BoolElement
-    dspPresent: BoolElement
-    icachePresent: BoolElement
-    dcachePresent: BoolElement
-    itcmPresent: BoolElement
-    dtcmPresent: BoolElement
-    vtorPresent: BoolElement
-    nvicPrioBits: SvdIntElement
-    vendorSystickConfig: BoolElement
-    deviceNumInterrupts: SvdIntElement
-    sauNumRegions: SvdIntElement
-    sauRegionsConfig: SauRegionsConfigElement
+    name: CpuNameElement = elem("name", CpuNameElement)
+    revision: str = elem("revision", StringElement)
+    endian: EndianTypeElement = elem("endian", EndianTypeElement)
+    mpuPresent: Optional[bool] = elem("mpuPresent", BoolElement, default=None)
+    fpuPresent: Optional[bool] = elem("fpuPresent", BoolElement, default=None)
+    fpuDP: Optional[bool] = elem("fpuDP", BoolElement, default=None)
+    dspPresent: Optional[bool] = elem("dspPresent", BoolElement, default=None)
+    icachePresent: Optional[bool] = elem(
+        "icachePresent", BoolElement, default=None)
+    dcachePresent: Optional[bool] = elem(
+        "dcachePresent", BoolElement, default=None)
+    itcmPresent: Optional[bool] = elem(
+        "itcmPresent", BoolElement, default=None)
+    dtcmPresent: Optional[bool] = elem(
+        "dtcmPresent", BoolElement, default=None)
+    vtorPresent: Optional[bool] = elem(
+        "vtorPresent", BoolElement, default=None)
+    nvicPrioBits: int = elem("nvicPrioBits", SvdIntElement)
+    vendorSystickConfig: bool = elem("vendorSystickConfig", BoolElement)
+    deviceNumInterrupts: Optional[int] = elem(
+        "deviceNumInterrupts", SvdIntElement, default=None)
+    sauNumRegions: Optional[int] = elem(
+        "sauNumRegions", SvdIntElement, default=None)
+    sauRegionsConfig: Optional[SauRegionsConfigElement] = elem(
+        "sauRegionsConfig", SauRegionsConfigElement, default=None)
 
 
-class PeripheralElement(_XmlElementBinding):
-    TAG = "peripheral"
+@binding
+class AddressBlockElement:
+    TAG = "addressBlock"
+
+    offset: int = elem("offset", SvdIntElement)
+    size: int = elem("size", SvdIntElement)
+    usage: AddressBlockUsageElement = elem("usage", AddressBlockUsageElement)
+    protection: Optional[ProtectionElement] = elem(
+        "protection", ProtectionElement)
+
+
+@binding
+class EnumeratedValueElement:
+    TAG = "enumeratedValue"
+
+    name: str = elem("name", StringElement)
+    description: Optional[str] = elem(
+        "description", StringElement, default=None)
+    value: int = elem("value", SvdIntElement)
+    isDefault: bool = elem("isDefault", BoolElement, default=False)
+
+
+@binding
+class EnumerationElement:
+    TAG = "enumeratedValues"
+
+    name: Optional[str] = elem("name", StringElement, default=None)
+    headerEnumName: Optional[str] = elem(
+        "headerEnumName", StringElement, default=None)
+    usage: Optional[EnumUsageElement] = elem(
+        "usage", EnumUsageElement, default=None)
+    enumeratedValue: EnumeratedValueElement = elem(
+        "enumeratedValue", EnumeratedValueElement)
+
+
+@binding
+class DimArrayIndexElement:
+    TAG = "dimArrayIndex"
+
+    headerEnumName: Optional[str] = elem(
+        "headerEnumName", StringElement, default=None)
+    enumeratedValue: EnumeratedValueElement = elem(
+        "enumeratedValue", EnumeratedValueElement)
+
+
+class InterruptElement(_XmlElementBinding):
+    TAG = "interrupt"
 
     name: StringElement
-    version: StringElement
     description: StringElement
-    alternatePeripheral: StringElement
-    groupName: StringElement
-    prependToName: StringElement
-    appendToName: StringElement
-    headerStructName: StringElement
-    disableCondition: StringElement
-    baseAddress: SvdIntElement
-    addressBlock: AddressBlockElement
-    interrupt: InterruptElement
+    value: SvdIntElement
+
+
+class BitRangeElement(StringElement):
+    TAG = "bitRange"
+
+    ...
+
+
+@binding
+class PeripheralElement:
+    TAG = "peripheral"
+
+    name: str = elem("name", StringElement)
+    version: Optional[str] = elem("version", StringElement, default=None)
+    description: Optional[str] = elem(
+        "description", StringElement, default=None)
+    alternatePeripheral: Optional[str] = elem(
+        "alternatePeripheral", StringElement, default=None)
+    groupName: Optional[str] = elem("groupName", StringElement, default=None)
+    prependToName: Optional[str] = elem(
+        "prependToName", StringElement, default=None)
+    appendToName: Optional[str] = elem(
+        "appendToName", StringElement, default=None)
+    headerStructName: Optional[str] = elem(
+        "headerStructName", StringElement, default=None)
+    disableCondition: Optional[str] = elem(
+        "disableCondition", StringElement, default=None)
+    baseAddress: int = elem("baseAddress", SvdIntElement)
+    addressBlock: AddressBlockElement = elem(
+        "addressBlock", AddressBlockElement)
+    interrupt: Optional[InterruptElement] = elem(
+        "interrupt", InterruptElement, default=None)
 
     size: SvdIntElement
     access: AccessElement
@@ -219,54 +350,6 @@ class DeviceElement(_XmlElementBinding):
     resetMask: SvdIntElement
 
     peripherals: PeripheralsElement
-
-
-class DimArrayIndexElement(_XmlElementBinding):
-    TAG = "dimArrayIndex"
-
-    headerEnumName: StringElement
-    enumeratedValue: EnumeratedValueElement
-
-
-class EnumerationElement(_XmlElementBinding):
-    TAG = "enumeratedValues"
-
-    name: StringElement
-    headerEnumName: StringElement
-    usage: EnumUsageElement
-    enumeratedValue: EnumeratedValueElement
-
-
-class EnumeratedValueElement(_XmlElementBinding):
-    TAG = "enumeratedValue"
-
-    name: StringElement
-    description: StringElement
-    value: SvdIntElement
-    isDefault: BoolElement
-
-
-class AddressBlockElement(_XmlElementBinding):
-    TAG = "addressBlock"
-
-    offset: SvdIntElement
-    size: SvdIntElement
-    usage: AddressBlockUsageElement
-    protection: ProtectionElement
-
-
-class InterruptElement(_XmlElementBinding):
-    TAG = "interrupt"
-
-    name: StringElement
-    description: StringElement
-    value: SvdIntElement
-
-
-class BitRangeElement(StringElement):
-    TAG = "bitRange"
-
-    ...
 
 
 class FieldElement(_XmlElementBinding):
