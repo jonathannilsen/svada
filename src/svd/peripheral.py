@@ -10,42 +10,49 @@ Python representation of an SVD Peripheral unit.
 
 from __future__ import annotations
 
-import copy
 import operator as op
 from collections import ChainMap, defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
-from itertools import chain, product
+from functools import cached_property
 from math import log2
-from typing import List, Tuple, Union, Dict, Iterable, NamedTuple, Optional, Set
+from typing import (
+    Collection,
+    List,
+    Tuple,
+    Union,
+    Dict,
+    Iterable,
+    NamedTuple,
+    Optional,
+    Sequence,
+)
 from pprint import pformat
-from time import perf_counter_ns
-
-import lxml.etree as ET
 
 from . import bindings
+from .bindings import (
+    RegisterProperties, Dimensions
+)
 from . import util
-from .svd_enums import *
 
 # TODO: add option for not expanding arrays during recursive iter
 
+
 class Device(Mapping):
-    """
-    Representation of a device.
-    TODO
-    """
+    """Representation of a SVD device."""
 
     def __init__(self, device: bindings.DeviceElement):
-        self._device = device
-        self._reg_props = RegisterProperties(self._device)
+        self._device: bindings.DeviceElement = device
+        self._reg_props: RegisterProperties = (
+            self._device.get_register_properties()
+        )
 
         peripherals = {}
 
-        for peripheral_element in _topo_sort_derived_peripherals(
-            device.peripherals.iterchildren()
-        ):
-            if (derived_from := peripheral_element.get("derivedFrom")) is not None:
-                base_peripheral = peripherals[derived_from]
+        # Process peripherals in topological order to ensure that base peripherals are processed
+        # before derived peripherals.
+        for peripheral_element in _topo_sort_derived_peripherals(device.peripherals):
+            if peripheral_element.is_derived:
+                base_peripheral = peripherals[peripheral_element.derived_from]
             else:
                 base_peripheral = None
 
@@ -61,30 +68,30 @@ class Device(Mapping):
             sorted(peripherals.items(), key=lambda kv: kv[1].base_address)
         )
 
+    @property
+    def name(self) -> str:
+        """Name of the device."""
+        return self._device.name
+
     def __getitem__(self, name: str) -> Peripheral:
-        """Get a peripheral by name"""
+        """Get a peripheral by name."""
         try:
             return self._peripherals[name]
         except KeyError as e:
             raise KeyError(f"Device does not contain a peripheral named {name}") from e
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable[str]:
+        """Iterate over the names of peripherals in the device."""
         return iter(self._peripherals)
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Get the number of peripherals in the device."""
         return len(self._peripherals)
 
-    # FIXME: delete?
     @property
     def peripherals(self) -> Dict[str, Peripheral]:
-        """Map of Peripherals in the device, indexed by name"""
+        """Map of peripherals in the device, indexed by name."""
         return self._peripherals
-
-
-# Support __delitem__ to remove registers
-# (internally this could just hide the registers if necessary)
-class LazyMap:
-    ...
 
 
 class Peripheral(Mapping):
@@ -100,7 +107,7 @@ class Peripheral(Mapping):
     def __init__(
         self,
         peripheral: bindings.PeripheralElement,
-        base_reg_props: RegisterProperties,
+        base_reg_props: bindings.RegisterProperties,
         base_peripheral: Optional[Peripheral] = None,
     ):
         """
@@ -112,20 +119,18 @@ class Peripheral(Mapping):
         """
         self._peripheral: bindings.PeripheralElement = peripheral
         self._base_peripheral: Optional[Peripheral] = base_peripheral
-        self._base_address: int = peripheral.baseAddress.pyval
-        self._reg_props: RegisterProperties = RegisterProperties(
-            self._peripheral, base=base_reg_props
+        self._base_address: int = peripheral.base_address
+        self._reg_props: bindings.RegisterProperties = (
+            self._peripheral.get_register_properties(base_props=base_reg_props)
         )
-        self._values = {}
-        self._registers: Dict[str, RegisterType] = {}
+        self._values: Dict[int, int] = {}
 
-        # FIXME: remove
-        self._times = {}
+        self._registers: Dict[str, RegisterType] = {}
 
     @property
     def name(self) -> str:
         """Name of the peripheral."""
-        return self._peripheral.name.pyval
+        return self._peripheral.name
 
     @property
     def base_address(self) -> int:
@@ -146,15 +151,8 @@ class Peripheral(Mapping):
         :param absolute_addresses: If true,
         :param leaf_only: Only
         """
-        t_start = perf_counter_ns()
-        register_tree = self._register_tree
-        t_recurse_start = perf_counter_ns()
         for register_name in self._register_tree:
             yield from self[register_name].recursive_iter(leaf_only)
-        t_end = perf_counter_ns()
-        t_tree = t_recurse_start - t_start
-        t_recurse = t_end - t_recurse_start
-        print(f"derived: {self._base_peripheral is not None}, tree time: {t_tree}ns, recurse time: {t_recurse}ns, fraction: {t_recurse / t_tree:.2f} ({t_tree / t_recurse:.2f})")
 
     def memory_iter(self, absolute_addresses: bool = True):
         """TODO"""
@@ -175,11 +173,7 @@ class Peripheral(Mapping):
     @cached_property
     def _register_tree(self) -> Mapping[str, _RegisterDescription]:
         # Add the registers defined in this peripheral
-        if (registers_element := self._peripheral.registers) is not None:
-            own_registers = registers_element.iterchildren()
-            registers = _expand_registers(own_registers, self._reg_props)
-        else:
-            registers = {}
+        registers = _expand_registers(self._peripheral.registers, self._reg_props)
 
         # Add the registers defined in the base peripheral, if any
         # FIXME: need to merge registers to ensure sorted
@@ -190,55 +184,54 @@ class Peripheral(Mapping):
                 registers = ChainMap(registers, self._base_peripheral._register_tree)
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
-            elif (
-                base_registers_element := self._base_peripheral._peripheral.registers
-            ) is not None:
-                base_registers = base_registers_element.iterchildren()
+            elif base_registers := self._base_peripheral._peripheral.registers:
                 base_registers = _expand_registers(base_registers, self._reg_props)
                 registers = ChainMap(registers, base_registers)
 
         return registers
 
+    def _register_factory(self, name: str) -> RegisterType:
+        try:
+            return _create_register(self._register_tree[name], peripheral=self)
+        except LookupError as e:
+            raise KeyError(
+                f"Peripheral does not contain a register named '{name}'"
+            ) from e
+
     def __getitem__(self, name: str) -> Register:
         """
-        :param key: Either the address of a register, or the register's name and instance; for
-            example "mem.config.0".
+        :param name: Name of the register to get.
 
         :return: The instance of the specified register.
         """
         if (existing_register := self._registers.get(name)) is not None:
             return existing_register
 
-        try:
-            register = _create_register(self._register_tree[name], peripheral=self)
-            self._registers[name] = register
-            return register
-        except LookupError as e:
-            raise KeyError(
-                f"Peripheral does not contain a register named '{name}'"
-            ) from e
 
-    def __setitem__(self, key: str, value: int):
+        self._registers[name] = register
+
+        return register
+
+    def __setitem__(self, name: str, value: int):
         """
-        :param key: Either the address of a register, or the register's name and instance; for
-            example "mem.config.0".
+        :param name: Name of the register to update.
         :param value: The raw register value to write to the specified register.
         """
 
-        self[key].value = value
+        self[name].value = value
 
     def __iter__(self):
+        """Iterate over the names of registers in the peripheral."""
         return iter(self._registers)
 
     def __len__(self):
+        """Get the number of registers in the peripheral."""
         return len(self._registers)
 
     def __repr__(self) -> str:
-        """Base representation of the class."""
         return f"Peripheral {self.name.upper()}@{hex(self.base_address)}"
 
     def __str__(self) -> str:
-        """String representation of the class."""
         periph = {hex(k): v for k, v in self.memory_map.items() if v.modified}
         return f"Peripheral {self.name.upper()}@{hex(self.base_address)}:\n{pformat(periph)}"
 
@@ -246,12 +239,13 @@ class Peripheral(Mapping):
 class _RegisterDescription(NamedTuple):
     """
     Description of a register, extracted from the SVD nodes.
+    This description is static
     """
 
     name: str
     start_offset: int
-    reg_props: RegisterProperties
-    dim_props: Optional[DimensionProperties]
+    reg_props: bindings.RegisterProperties
+    dim_props: Optional[bindings.Dimensions]
     registers: Optional[Dict[str, _RegisterDescription]]
     fields: Optional[Dict[str, _FieldDescription]]
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
@@ -272,8 +266,8 @@ class _RegisterBase:
         self,
         description: _RegisterDescription,
         peripheral: Peripheral,
-        instance_offset: int =0,
-        index: Optional[int] =None,
+        instance_offset: int = 0,
+        index: Optional[int] = None,
         qualified_prefix: str = "",
     ):
         """
@@ -318,6 +312,7 @@ class _RegisterBase:
     def __str__(self) -> str:
         return f"{self.__class__.__name__} {self.full_name} @ {hex(self.offset)}"
 
+
 class _DimensionedRegister(_RegisterBase, Sequence):
     """
     Base class for register arrays.
@@ -344,13 +339,16 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         if (existing_child := self._array[index]) is not None:
             return existing_child
 
-        return self.member_type(
+        new_register = self.member_type(
             self._description,
             self._peripheral,
             instance_offset=self._instance_offset + self._array_offsets[index],
             index=index,
             qualified_prefix=self._qualified_prefix,
         )
+        self._array[index] = new_register
+
+        return new_register
 
     def __iter__(self):
         for i in range(len(self)):
@@ -390,12 +388,15 @@ class RegisterStruct(_RegisterBase, Mapping):
                 f"Register structure {self.full_name} does not contain a register named {name}"
             ) from e
 
-        return _create_register(
+        new_register = _create_register(
             child_description,
             peripheral=self._peripheral,
             instance_offset=self._instance_offset,
             qualified_prefix=f"{self.full_name}.",
         )
+        self._registers[name] = new_register
+
+        return new_register
 
     def __setitem__(self, name: str, value: int):
         """Set a register by name"""
@@ -493,20 +494,26 @@ class Register(_RegisterBase, Mapping):
         """TODO"""
         yield self
 
-    def __getitem__(self, key: str) -> Field:
+    def __getitem__(self, name: str) -> Field:
         """
-        :param key: Field name.
+        :param name: Field name.
 
         :return: The instance of the specified field.
         """
+        if (existing_field := self._fields.get(name)) is not None:
+            return existing_field
 
         try:
-            field_description = self._description.fields[key]
-            return Field(field_description, self)
+            field_description = self._description.fields[name]
         except LookupError as e:
             raise KeyError(
-                f"Register '{self.full_name}' does not define a field with name '{key}'"
+                f"Register '{self.full_name}' does not define a field with name '{name}'"
             ) from e
+
+        field = Field(field_description, self)
+        self._fields[name] = field
+
+        return field
 
     def __setitem__(self, key: str, value: Union[str, int]):
         """
@@ -517,14 +524,16 @@ class Register(_RegisterBase, Mapping):
         self[key].value = value
 
     def __iter__(self):
+        """Iterate over the fields of the register."""
         return iter(self._fields)
 
     def __len__(self):
+        """Number of fields in the register."""
         return len(self._fields)
 
     def __repr__(self):
         """Basic representation of the class object."""
-        return f"{super().__str__()} {'(modified) ' if self.modified else ''}= 0x{self.value:08x}"
+        return f"{super().__repr__()} {'(modified) ' if self.modified else ''}= 0x{self.value:08x}"
 
     def __str__(self):
         """String representation of the class."""
@@ -532,24 +541,25 @@ class Register(_RegisterBase, Mapping):
         attrs = {
             "Modified": self.modified,
             "Value": f"{self.value:08x}",
-            "Fields": {k: str(v) for k, v in self.items()},  # FIXME: just self?
+            "Fields": {k: str(v) for k, v in self.items()},
         }
 
         return f"{super().__str__()}: {pformat(attrs)}"
 
 
 class RegisterStructArray(_DimensionedRegister):
-    """TODO"""
+    """Array of RegisterStruct objects."""
 
     member_type = RegisterStruct
 
 
 class RegisterArray(_DimensionedRegister):
-    """TODO"""
+    """Array of Register objects."""
 
     member_type = Register
 
 
+# Union of all register types
 RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArray]
 
 
@@ -572,14 +582,13 @@ def _create_register(
 
 class _FieldDescription(NamedTuple):
     name: str
-    bit_offset: int
-    bit_width: int
+    bit_range: bindings.BitRange
     enums: Dict[str, int]
-    allowed_values: Sequence[int]
+    allowed_values: Collection[int]
     element: bindings.FieldElement
 
     @classmethod
-    def from_element(cls, element: bindings.FieldElement) -> Field:
+    def from_element(cls, element: bindings.FieldElement) -> _FieldDescription:
         """
         Construct a Field class from an SVD element.
 
@@ -588,26 +597,21 @@ class _FieldDescription(NamedTuple):
         :param reset_value: Reset value of field.
         """
 
-        name = element.name.pyval
-        # FIXME move get_bit_range() back to util function
-        bit_offset, bit_width = element.get_bit_range()
+        name = element.name
+        bit_range = element.bit_range
 
         # We do not support "do not care" bits, as by marking bits "x", see
         # SVD docs "/device/peripherals/peripheral/registers/.../enumeratedValue"
-        if (enum_values := element.enumeratedValues) is not None:
-            enums = {
-                enum.name.pyval: enum.value.pyval
-                for enum in enum_values.enumeratedValue
-            }
+        if element.enumerated_values is not None:
+            enums = {e.name: e.value for e in element.enumerated_values}
         else:
             enums = {}
 
-        allowed_values = set(enums.values()) if enums else range(2**bit_width)
+        allowed_values = set(enums.values()) if enums else range(2**bit_range.width)
 
         return cls(
             name=name,
-            bit_offset=bit_offset,
-            bit_width=bit_width,
+            bit_range=bit_range,
             enums=enums,
             allowed_values=allowed_values,
             element=element,
@@ -650,10 +654,12 @@ class Field:
 
     @property
     def full_name(self) -> str:
+        """The full name of the field, including the register name."""
         return f"{self._register.full_name}.{self.name}"
 
     @property
     def value(self) -> int:
+        """The value of the field."""
         return self._extract_value_from_register(self._register.value)
 
     @value.setter
@@ -700,12 +706,12 @@ class Field:
     @property
     def bit_offset(self) -> int:
         """Bit offset of the field. Same as the field's bit position."""
-        return self._description.bit_offset
+        return self._description.bit_range.offset
 
     @property
     def bit_width(self) -> int:
         """Width of bits in the field."""
-        return self._description.bit_width
+        return self._description.bit_range.width
 
     @property
     def mask(self) -> int:
@@ -713,7 +719,7 @@ class Field:
         return ((1 << self.bit_width) - 1) << self.bit_offset
 
     @property
-    def allowed_values(self) -> Union[Set[int], range]:
+    def allowed_values(self) -> Collection[int]:
         """Possible valid values for the bitfield."""
         return self._allowed_values
 
@@ -807,8 +813,8 @@ def _topo_sort_derived_peripherals(
     dep_graph: Dict[str, List[bindings.PeripheralElement]] = defaultdict(list)
 
     for peripheral in peripherals:
-        if (derived_from := peripheral.get("derivedFrom")) is not None:
-            dep_graph[derived_from].append(peripheral)
+        if peripheral.is_derived:
+            dep_graph[peripheral.derived_from].append(peripheral)
         else:
             no_dep_peripherals.append(peripheral)
 
@@ -817,8 +823,8 @@ def _topo_sort_derived_peripherals(
         sorted_peripherals.append(peripheral)
         # Each peripheral has a maximum of one in-edge since they can only derive from one
         # peripheral. Therefore, once they are encountered here they have no remaining dependencies.
-        no_dep_peripherals.extend(dep_graph[peripheral.name.pyval])
-        dep_graph.pop(peripheral.name.pyval, None)
+        no_dep_peripherals.extend(dep_graph[peripheral.name])
+        dep_graph.pop(peripheral.name, None)
 
     if dep_graph:
         raise ValueError(
@@ -831,20 +837,28 @@ def _topo_sort_derived_peripherals(
     return sorted_peripherals
 
 
-def _expand_element_fields(element):
-    # FIXME: sorted?
-    if (fields_element := element.fields) is not None:
-        field_desc = (
-            _FieldDescription.from_element(e) for e in fields_element.iterchildren()
-        )
-        return {desc.name: desc for desc in field_desc}
-    return None
+def _expand_registers(
+    elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
+    base_reg_props: bindings.RegisterProperties,
+) -> Dict[int, Register]:
+    """
+    Get the memory map of a peripheral unit given by an SVD element and its
+    base address.
+
+    :param element: ElementTree representation of the SVD peripheral.
+    :param base_address: Base address of peripheral unit.
+
+    :return: Mapping from addresses to Registers.
+    """
+    result, _ = _get_register_elements(elements, base_reg_props)
+
+    return result
 
 
 # TODO: maybe cache the leaf nodes here
 def _get_register_elements(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
-    base_reg_props: RegisterProperties,
+    base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
 ) -> Tuple[Optional[Dict[str, RegisterType]], Optional[int]]:
     """
@@ -865,15 +879,10 @@ def _get_register_elements(
     min_address_total = float("inf")
 
     for element in elements:
-        name = util.strip_prefixes_suffixes(element.name.pyval, [], ["[%s]"])
-
-        reg_props = RegisterProperties(element, base=base_reg_props)
-        dim_props = DimensionProperties.from_binding(element)
-
-        if (address_offset_data := element.addressOffset) is not None:
-            address_offset = address_offset_data.pyval
-        else:
-            address_offset = None
+        name = util.strip_prefixes_suffixes(element.name, [], ["[%s]"])
+        reg_props = element.get_register_properties(base_props=base_reg_props)
+        dim_props = element.dimensions
+        address_offset = element.offset
 
         if isinstance(element, bindings.RegisterElement):
             # Register addresses are defined relative to the enclosing element
@@ -895,9 +904,7 @@ def _get_register_elements(
                 address = base_address
 
             registers, min_child_address = _get_register_elements(
-                elements=element.iterchildren(
-                    bindings.RegisterElement.TAG, bindings.ClusterElement.TAG
-                ),
+                elements=element.registers,
                 base_reg_props=reg_props,
                 base_address=address,
             )
@@ -931,19 +938,14 @@ def _get_register_elements(
     return result, min_address_total
 
 
-def _expand_registers(
-    elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
-    base_reg_props: RegisterProperties,
-) -> Dict[int, Register]:
-    """
-    Get the memory map of a peripheral unit given by an SVD element and its
-    base address.
+def _expand_element_fields(element):
+    # FIXME: sorted?
+    fields = {
+        field.name: _FieldDescription.from_element(field) for field in element.fields
+    }
 
-    :param element: ElementTree representation of the SVD peripheral.
-    :param base_address: Base address of peripheral unit.
+    if not fields:
+        return None
 
-    :return: Mapping from addresses to Registers.
-    """
-    result, _ = _get_register_elements(elements, base_reg_props)
+    return fields
 
-    return result
