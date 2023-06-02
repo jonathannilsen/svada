@@ -351,7 +351,12 @@ class LazyStaticList(Sequence[T]):
     The length of the list is fixed at construction time.
     """
 
-    def __init__(self, length: int, factory: Callable[[int], T]):
+    def __init__(self, length: int, factory: Callable[[int], T], **kwargs):
+        """
+        :param length: Length of the list.
+        :param factory: Factory function which is called to initialize
+                        new elements.
+        """
         self._factory = factory
         self._storage: List[Optional[T]] = [None for _ in range(length)]
 
@@ -366,3 +371,33 @@ class LazyStaticList(Sequence[T]):
 
     def __len__(self) -> int:
         return len(self._storage)
+
+
+def iter_merged(a: Iterable[T], b: Iterable[T], key: Callable[[T], Any]) -> Iterator[T]:
+    class _End:
+        ...
+
+    iter_a = iter(a)
+    iter_b = iter(b)
+
+    item_a = next(iter_a, _End)
+    item_b = next(item_b, _End)
+
+    while True:
+        if item_a is not _End and item_b is not _End:
+            key_a = key(item_a)
+            key_b = key(item_b)
+            if key_a <= key_b:
+                yield item_a
+                item_a = next(iter_a, _End)
+            else:
+                yield item_b
+                item_b = next(iter_b, _End)
+        elif item_a is not _End:
+            yield item_a
+            item_a = next(iter_a, _End)
+        elif item_b is not _End:
+            yield item_b
+            item_b = next(iter_b, _End)
+        else:
+            break

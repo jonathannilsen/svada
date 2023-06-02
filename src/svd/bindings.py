@@ -6,7 +6,7 @@
 
 """
 "Low-level" read-only Python representation of the SVD format.
-Each type of XML element the SVD XML tree is represented by a class in this module.
+Each type of element in the SVD XML tree is represented by a class in this module.
 The class properties correspond more or less directly to the XML elements/attributes,
 with some abstractions and simplifications added for convenience.
 """

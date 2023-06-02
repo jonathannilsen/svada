@@ -15,8 +15,8 @@ from .peripheral import (
     Peripheral,
     Register,
     Field,
-    _expand_registers,
-    _get_register_elements,
+    _extract_register_descriptions,
+    _extract_register_descriptions_helper,
 )
 from .util import (
     strip_prefixes_suffixes,
