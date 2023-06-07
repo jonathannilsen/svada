@@ -7,20 +7,18 @@
 PACKAGE_NAME = "svada"
 
 from .parsing import (
-    parse_peripheral,
     parse,
+    SvdParseException,
 )
 from .peripheral import (
     Device,
     Peripheral,
+    RegisterType,
     Register,
+    RegisterArray,
+    RegisterStruct,
+    RegisterStructArray,
     Field,
-    _extract_register_descriptions,
-    _extract_register_descriptions_helper,
-)
-from .util import (
-    strip_prefixes_suffixes,
-    to_int,
 )
 
 import importlib.metadata
@@ -28,5 +26,6 @@ import importlib.metadata
 try:
     __version__ = importlib.metadata.version(PACKAGE_NAME)
 except importlib.metadata.PackageNotFoundError:
+    # Package is not installed
+    # TODO: fix version here
     __version__ = "0.0.0"
-    #raise RuntimeError(f"{PACKAGE_NAME} is not installed")

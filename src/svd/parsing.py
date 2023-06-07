@@ -8,46 +8,29 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union, get_type_hints
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import lxml.etree as ET
 from lxml import objectify
 
 from . import bindings
 from . import util
-from .peripheral import Device, Peripheral, Register
+from .peripheral import Device
 
 
-def parse_peripheral(
-    svd_path: Union[str, Path], peripheral_name: str
-) -> Dict[int, Register]:
-    """
-    Parse an SVD for a specific peripheral and return it as a map of a memory offset and the
-    register at that offset.
-
-    :param svd_path: SVD file to use
-    :param peripheral_name: Peripheral to parse
-
-    :raise FileNotFoundError: If the SVD file does not exist.
-
-    :return: Mapping of offset:registers for the peripheral.
-    """
-
-    # TODO: FIXME
-    svd_file = Path(svd_path)
-
-    if not svd_file.is_file():
-        raise FileNotFoundError(f"No such file: {svd_file.absolute()}")
-
-    device = ET.parse(svd_file).getroot()
-    peripheral = Peripheral(device, peripheral_name)
-
-    return peripheral
+class SvdParseException(RuntimeError):
+    """Exception raised when an error occurs during SVD parsing."""
+    ...
 
 
 def parse(svd_path: Union[str, Path]) -> Device:
     """
-    Parse an SVD TODO
+    Parse a device described by a SVD file.
+
+    :param svd_path: Path to the SVD file.
+    :raises FileNotFoundError: If the SVD file does not exist.
+    :raises SvdParseException: If an error occurred while parsing the SVD file.
+    :return: Parsed representation of the SVD device.
     """
 
     svd_file = Path(svd_path)
@@ -55,24 +38,28 @@ def parse(svd_path: Union[str, Path]) -> Device:
     if not svd_file.is_file():
         raise FileNotFoundError(f"No such file: {svd_file.absolute()}")
 
-    xml_parser = objectify.makeparser(remove_comments=True)
-    class_lookup = _TwoLevelTagLookup(bindings.ELEMENT_CLASSES)
-    xml_parser.set_element_class_lookup(class_lookup)
+    try:
+        # Note: remove comments as otherwise these are present as nodes in the returned XML tree
+        xml_parser = objectify.makeparser(remove_comments=True)
+        class_lookup = _TwoLevelTagLookup(bindings.ELEMENT_CLASSES)
+        xml_parser.set_element_class_lookup(class_lookup)
 
-    # TODO: some handling of errors here
-    with open(svd_file, "r") as f:
-        xml_device = objectify.parse(f, parser=xml_parser)
+        with open(svd_file, "r") as f:
+            xml_device = objectify.parse(f, parser=xml_parser)
 
-    device = Device(xml_device.getroot())
+        device = Device(xml_device.getroot())
+
+    except Exception as e:
+        raise SvdParseException(f"Error parsing SVD file {svd_file}") from e
 
     return device
 
 
 class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
     """
-    XML element class lookup that supports multiple levels of tag names.
-    This two-level scheme is used to slightly optimize the time spent by the parser looking up
-    looking up the class for an element (which is a sizeable portion of the time spent parsing).
+    XML element class lookup that uses two levels of tag names to map an XML element to a Python
+    class. This two-level scheme is used to slightly optimize the time spent by the parser looking
+    up looking up the class for an element (which is a sizeable portion of the time spent parsing).
 
     Element classes that can be uniquely identified by tag only are stored in the first level.
     This level uses the lxml ElementNamespaceClassLookup which is faster than the second level.
@@ -82,6 +69,9 @@ class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
     """
 
     def __init__(self, element_classes: List[objectify.ObjectifiedElement]):
+        """
+        :param element_classes: lxml element classes to add to the lookup table.
+        """
         super().__init__()
 
         tag_classes: Dict[str, Set[type]] = defaultdict(set)
@@ -136,7 +126,7 @@ class _SecondLevelTagLookup(ET.PythonElementClassLookup):
     ):
         self._lookup_table = lookup_table
 
-    def lookup(self, _document, element: ET.Element):
+    def lookup(self, _document, element: ET._Element):
         """Look up the Element class for the given XML element"""
         if (parent := element.getparent()) is not None:
             parent_tag = parent.tag

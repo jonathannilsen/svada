@@ -127,7 +127,7 @@ EnumUsageElement = enum_wrapper(EnumUsage)
 
 
 @enum.unique
-class ModifiedWriteValues(CaseInsensitiveStrEnum):
+class WriteAction(CaseInsensitiveStrEnum):
     ONE_TO_CLEAR = "oneToClear"
     ONE_TO_SET = "oneToSet"
     ONE_TO_TOGGLE = "oneToToggle"
@@ -139,7 +139,7 @@ class ModifiedWriteValues(CaseInsensitiveStrEnum):
     MODIFY = "modify"
 
 
-ModifiedWriteValuesElement = enum_wrapper(ModifiedWriteValues)
+ModifiedWriteValuesElement = enum_wrapper(WriteAction)
 
 
 @enum.unique
@@ -208,13 +208,29 @@ class RangeWriteConstraint(objectify.ObjectifiedElement):
     maximum: int = elem("maximum", SvdIntElement)
 
 
+@enum.unique
+class WriteConstraint(enum.Enum):
+    WRITE_AS_READ = enum.auto()
+    USE_ENUMERATED_VALUES = enum.auto()
+    RANGE = enum.auto()
+
+
 @binding(ELEMENT_CLASSES)
-class WriteConstraint(objectify.ObjectifiedElement):
+class WriteConstraintElement(objectify.ObjectifiedElement):
     TAG = "writeConstraint"
 
-    write_as_read: bool = elem("writeAsRead", BoolElement)
-    use_enumerated_values: bool = elem("useEnumeratedValues", BoolElement)
-    ranges: RangeWriteConstraint = elem("range", RangeWriteConstraint)
+    value_range: Optional[RangeWriteConstraint] = elem("range", RangeWriteConstraint, default=None)
+
+    def as_enum(self) -> Optional[WriteConstraint]:
+        if self._write_as_read:
+            return WriteConstraint.WRITE_AS_READ
+        if self._use_enumerated_values:
+            return WriteConstraint.USE_ENUMERATED_VALUES
+        if self.value_range is not None:
+            return WriteConstraint.RANGE
+
+    _write_as_read: bool = elem("writeAsRead", BoolElement, default=False)
+    _use_enumerated_values: bool = elem("useEnumeratedValues", BoolElement, default=False)
 
 
 @binding(ELEMENT_CLASSES)
@@ -247,8 +263,13 @@ class SauRegionsConfig(objectify.ObjectifiedElement):
 
 @binding(ELEMENT_CLASSES)
 class Cpu(objectify.ObjectifiedElement):
+    """
+    CPU
+    """
+
     TAG = "cpu"
 
+    # Name of the CPU
     name: CpuName = elem("name", CpuNameElement)
     revision: str = elem("revision", StringElement)
     endian: Endian = elem("endian", EndianElement)
@@ -333,16 +354,12 @@ class DimArrayIndex(objectify.ObjectifiedElement):
 
 
 @binding(ELEMENT_CLASSES)
-class InterruptElement(objectify.ObjectifiedElement):
+class Interrupt(objectify.ObjectifiedElement):
     TAG = "interrupt"
 
     name: str = elem("name", StringElement)
     description: Optional[str] = elem("description", StringElement, default=None)
     value: int = elem("value", SvdIntElement)
-
-
-class BitRangeElement(StringElement):
-    TAG = "bitRange"
 
 
 class BitRange(NamedTuple):
@@ -358,11 +375,11 @@ class FieldElement(objectify.ObjectifiedElement, DerivedMixin):
     description: Optional[str] = elem("description", StringElement, default=None)
 
     access: Optional[Access] = elem("access", AccessElement, default=None)
-    modified_write_values: Optional[ModifiedWriteValues] = elem(
+    modified_write_values: Optional[WriteAction] = elem(
         "modifiedWriteValue", ModifiedWriteValuesElement, default=None
     )
-    write_constraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", WriteConstraint, default=None
+    write_constraint: Optional[WriteConstraintElement] = elem(
+        "writeConstraint", WriteConstraintElement, default=None
     )
     read_action: Optional[ReadAction] = elem(
         "readAction", ReadActionElement, default=None
@@ -399,8 +416,8 @@ class FieldElement(objectify.ObjectifiedElement, DerivedMixin):
     _bit_offset: Optional[int] = elem("bitOffset", SvdIntElement, default=None)
     _bit_width: Optional[int] = elem("bitWidth", SvdIntElement, default=None)
 
-    _bit_range: Optional[BitRangeElement] = elem(
-        "bitRange", BitRangeElement, default=None
+    _bit_range: Optional[str] = elem(
+        "bitRange", StringElement, default=None
     )
 
 
@@ -422,7 +439,7 @@ class RegisterProperties:
     reset_mask: Optional[int]
 
 
-class RegisterPropertiesMixin:
+class RegisterPropertiesGroup:
     """Common functionality for elements that contain a SVD 'registerPropertiesGroup'."""
 
     def get_register_properties(
@@ -482,7 +499,7 @@ class Dimensions:
         return range(0, (self.length - 1) * self.step + 1, self.step)
 
 
-class DimensionMixin:
+class DimElementGroup:
     """Common functionality for elements that contain a SVD 'dimElementGroup'."""
 
     dim_index: Optional[int] = elem("dimIndex", SvdIntElement, default=None)
@@ -508,7 +525,7 @@ class DimensionMixin:
 
 @binding(ELEMENT_CLASSES)
 class RegisterElement(
-    objectify.ObjectifiedElement, DimensionMixin, RegisterPropertiesMixin, DerivedMixin
+    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
 ):
     TAG: str = "register"
 
@@ -522,13 +539,13 @@ class RegisterElement(
     offset: Optional[int] = elem("addressOffset", SvdIntElement, default=None)
 
     data_type: Optional[DataType] = elem("dataType", DataTypeElement, default=None)
-    modified_write_values: Optional[ModifiedWriteValues] = elem(
-        "modifiedWriteValues", ModifiedWriteValuesElement, default=None
+    modified_write_values: Optional[WriteAction] = elem(
+        "modifiedWriteValues", ModifiedWriteValuesElement, default=WriteAction.MODIFY
     )
-    writeConstraint: Optional[WriteConstraint] = elem(
-        "writeConstraint", WriteConstraint, default=None
+    write_constraint: Optional[WriteConstraintElement] = elem(
+        "writeConstraint", WriteConstraintElement, default=None
     )
-    readAction: Optional[ReadAction] = elem(
+    read_action: Optional[ReadAction] = elem(
         "readAction", ReadActionElement, default=None
     )
 
@@ -541,7 +558,7 @@ class RegisterElement(
 
 @binding(ELEMENT_CLASSES)
 class ClusterElement(
-    objectify.ObjectifiedElement, DimensionMixin, RegisterPropertiesMixin, DerivedMixin
+    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
 ):
     TAG: str = "cluster"
 
@@ -577,13 +594,28 @@ class RegistersElement(objectify.ObjectifiedElement):
 
 @binding(ELEMENT_CLASSES)
 class PeripheralElement(
-    objectify.ObjectifiedElement, DimensionMixin, RegisterPropertiesMixin, DerivedMixin
+    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
 ):
     TAG = "peripheral"
 
     name: str = elem("name", StringElement)
     version: Optional[str] = elem("version", StringElement, default=None)
     description: Optional[str] = elem("description", StringElement, default=None)
+
+    base_address: int = elem("baseAddress", SvdIntElement)
+
+    @property
+    def interrupts(self) -> Iterator[Interrupt]:
+        return iter_children(self, Interrupt.TAG)
+
+    @property
+    def address_blocks(self) -> Iterator[AddressBlock]:
+        return iter_children(self, AddressBlock.TAG)
+
+    @property
+    def registers(self) -> Iterator[Union[RegisterElement, ClusterElement]]:
+        return iter_children(self._registers, RegisterElement.TAG, ClusterElement.TAG)
+
     alternate_peripheral: Optional[str] = elem(
         "alternatePeripheral", StringElement, default=None
     )
@@ -596,16 +628,11 @@ class PeripheralElement(
     disable_condition: Optional[str] = elem(
         "disableCondition", StringElement, default=None
     )
-    base_address: int = elem("baseAddress", SvdIntElement)
-    address_block: AddressBlock = elem("addressBlock", AddressBlock)
-    interrupt: Optional[InterruptElement] = elem(
-        "interrupt", InterruptElement, default=None
-    )
 
-    @property
-    def registers(self) -> Iterator[Union[RegisterElement, ClusterElement]]:
-        return iter_children(self._registers, RegisterElement.TAG, ClusterElement.TAG)
-
+    _interrupts: Optional[Interrupt] = elem(
+        "interrupt", Interrupt, default=None
+    ) 
+    _address_blocks: Optional[AddressBlock] = elem("addressBlock", AddressBlock, default=None)
     _registers: Optional[RegistersElement] = elem(
         "registers", RegistersElement, default=None
     )
@@ -621,7 +648,7 @@ class PeripheralsElement(objectify.ObjectifiedElement):
 
 
 @binding(ELEMENT_CLASSES)
-class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesMixin):
+class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesGroup):
     TAG = "device"
 
     schema_version: float = attr("schemaVersion", converter=float)

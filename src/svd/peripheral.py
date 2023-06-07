@@ -31,15 +31,23 @@ from typing import (
 from pprint import pformat
 
 from . import bindings
-from .bindings import RegisterProperties, Dimensions
+from .bindings import (
+    Access,
+    AddressBlock,
+    Cpu,
+    RegisterProperties,
+    Dimensions,
+    WriteAction,
+    ReadAction,
+)
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
-# TODO: add option for not expanding arrays during recursive iter
-
 
 class Device(Mapping):
-    """Representation of a SVD device."""
+    """
+    Representation of a SVD device.
+    """
 
     def __init__(self, device: bindings.DeviceElement):
         self._device: bindings.DeviceElement = device
@@ -71,6 +79,31 @@ class Device(Mapping):
     def name(self) -> str:
         """Name of the device."""
         return self._device.name
+
+    @property
+    def series(self) -> Optional[str]:
+        """Device series name."""
+        return self._device.series
+
+    @property
+    def vendor_id(self) -> Optional[str]:
+        """Device vendor ID."""
+        return self._device.vendor_id
+
+    @property
+    def cpu(self) -> Cpu:
+        """Device CPU information"""
+        return self._device.cpu
+
+    @property
+    def address_unit_bits(self) -> int:
+        """Number of data bits corresponding to an address."""
+        return self._device.address_unit_bits
+
+    @property
+    def bus_bit_width(self) -> int:
+        """Maximum data bits supported by the bus in a single data transfer."""
+        return self._device.width
 
     @property
     def peripherals(self) -> Mapping[str, Peripheral]:
@@ -132,6 +165,16 @@ class Peripheral(Mapping):
         return self._peripheral.name
 
     @property
+    def version(self) -> Optional[str]:
+        """Optional version of the peripheral."""
+        return self._peripheral.version
+
+    @property
+    def description(self) -> Optional[str]:
+        """Optional description of the peripheral."""
+        return self._peripheral.description
+
+    @property
     def base_address(self) -> int:
         """Base address of the peripheral in memory."""
         return self._base_address
@@ -142,7 +185,24 @@ class Peripheral(Mapping):
         """Set the base address of the peripheral."""
         self._base_address = address
 
-    def recursive_iter(self, leaf_only: bool = False):
+    @property
+    def interrupts(self) -> Mapping[str, int]:
+        """Interrupts associated with the peripheral, a mapping from interrupt name to value."""
+        return {interrupt.name: interrupt.value for interrupt in self._peripheral.interrupts}
+
+    @property
+    def address_blocks(self) -> List[AddressBlock]:
+        """List of address blocks associated with the peripheral."""
+        return list(self._peripheral.address_blocks)
+
+    @cached_property
+    def registers(self) -> Mapping[str, RegisterType]:
+        """Mapping of top-level registers in the peripheral, indexed by name."""
+        return LazyStaticMapping(
+            keys=self._register_tree.keys(), factory=self._register_factory
+        )
+
+    def recursive_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -165,14 +225,8 @@ class Peripheral(Mapping):
         return dict(self.memory_iter())
 
     @cached_property
-    def registers(self) -> Mapping[str, RegisterType]:
-        """Map of registers in the peripheral, indexed by name"""
-        return LazyStaticMapping(
-            keys=self._register_tree.keys(), factory=self._register_factory
-        )
-
-    @cached_property
     def _register_tree(self) -> Mapping[str, _RegisterDescription]:
+        """TODO"""
         # Add the registers defined in this peripheral
         registers = _extract_register_descriptions(
             self._peripheral.registers, self._reg_props
@@ -207,6 +261,7 @@ class Peripheral(Mapping):
         return registers
 
     def _register_factory(self, name: str) -> RegisterType:
+        """Instantiate the register with the given name."""
         return _create_register_instance(self._register_tree[name], peripheral=self)
 
     def __getitem__(self, name: str) -> Register:
@@ -227,7 +282,6 @@ class Peripheral(Mapping):
         :param name: Name of the register to update.
         :param value: The raw register value to write to the specified register.
         """
-
         self[name].value = value
 
     def __iter__(self):
@@ -320,13 +374,37 @@ class _RegisterBase:
         return self._description.start_offset + self._instance_offset
 
     @property
+    def bit_width(self) -> int:
+        """Bit width of the register."""
+        return self._description.reg_props.size
+
+    @property
+    def access(self) -> Access:
+        """Register access."""
+        return self._description.reg_props.access
+
+    @property
+    def reset_value(self) -> int:
+        """Register reset value."""
+        return self._description.reg_props.reset_value
+
+    @property
+    def reset_mask(self) -> int:
+        """"""
+        return self._description.reg_props.reset_mask
+
+    @property
+    def write_action(self) -> ModifiedWriteValues:
+
+
+    @property
     def dimensions(self) -> Optional[Dimensions]:
-        """Dimensions of the register, if it is an"""
+        """Dimensions of the register, if specified."""
         return self._description.dim_props
 
     @property
-    def value(self) -> None:
-        raise NotImplementedError(f"Register {self.full_name} does not have a value")
+    def has_value(self) -> bool:
+        return False
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__} {self.full_name} @ {hex(self.offset)}"
@@ -415,11 +493,6 @@ class Register(_RegisterBase, Mapping):
         self._fields = LazyStaticMapping(
             keys=self._description.fields.keys(), factory=self._field_factory
         )
-
-    @property
-    def reset_value(self) -> int:
-        """Register reset value."""
-        return self._description.reg_props.reset_value
 
     @property
     def modified(self) -> bool:
@@ -776,6 +849,10 @@ class Field:
         return ((1 << self.bit_width) - 1) << self.bit_offset
 
     @property
+    def access(self) -> Access:
+        ...
+
+    @property
     def allowed_values(self) -> Collection[int]:
         """
         Possible valid values for the bitfield.
@@ -942,7 +1019,7 @@ def _extract_register_descriptions_helper(
              by name. The second element is the minimum address offset of any of the returned
              registers, used inside this function to sort registers while traversing.
     """
-    result_list = []
+    address_descriptions: List[Tuple[int, _RegisterDescription]] = []
     min_address_total = float("inf")
 
     for element in elements:
@@ -994,19 +1071,20 @@ def _extract_register_descriptions_helper(
             fields=fields,
         )
 
-        result_list.append((min_address, description))
+        address_descriptions.append((min_address, description))
         min_address_total = min(min_address_total, min_address)
 
     # No elements; return a dummy value
-    if not result_list:
+    if not address_descriptions:
         return {}, None
 
-    result = {
-        register.name: register
-        for _, register in sorted(result_list, key=op.itemgetter(0))
+    sorted_address_descriptions = sorted(address_descriptions, key=op.itemgetter(0))
+
+    descriptions = {
+        register.name: register for _, register in sorted_address_descriptions
     }
 
-    return result, min_address_total
+    return descriptions, min_address_total
 
 
 def _extract_field_descriptions(
