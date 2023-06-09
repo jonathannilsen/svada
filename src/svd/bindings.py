@@ -698,6 +698,7 @@ class Dimensions:
         return range(0, (self.length - 1) * self.step + 1, self.step)
 
 
+@typing.no_
 class DimElementGroup:
     """Common functionality for elements that contain a SVD 'dimElementGroup'."""
 
@@ -931,12 +932,6 @@ class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesGroup):
     # Version of the CMSIS schema that the SVD file conforms to.
     schema_version: float = attr("schemaVersion", converter=float)
 
-    # Full device vendor name.
-    vendor: Optional[str] = elem("vendor", StringElement, default=None)
-
-    # Abbreviated device vendor name.
-    vendor_id: Optional[str] = elem("vendorID", StringElement, default=None)
-
     # Name of the device.
     name: str = elem("name", StringElement)
 
@@ -945,6 +940,12 @@ class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesGroup):
 
     # Version of the device.
     version: str = elem("version", StringElement)
+
+    # Full device vendor name.
+    vendor: Optional[str] = elem("vendor", StringElement, default=None)
+
+    # Abbreviated device vendor name.
+    vendor_id: Optional[str] = elem("vendorID", StringElement, default=None)
 
     # Description of the device.
     description: str = elem("description", StringElement)

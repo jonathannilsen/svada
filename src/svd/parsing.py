@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Type, Union
 
 import lxml.etree as ET
 from lxml import objectify
@@ -68,7 +68,7 @@ class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
     The second level uses the lxml PythonElementClassLookup which is slower.
     """
 
-    def __init__(self, element_classes: List[objectify.ObjectifiedElement]):
+    def __init__(self, element_classes: List[Type[objectify.ObjectifiedElement]]):
         """
         :param element_classes: lxml element classes to add to the lookup table.
         """

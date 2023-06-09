@@ -39,6 +39,7 @@ from .bindings import (
     Dimensions,
     WriteAction,
     ReadAction,
+    WriteConstraint,
 )
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
@@ -91,7 +92,7 @@ class Device(Mapping):
         return self._device.vendor_id
 
     @property
-    def cpu(self) -> Cpu:
+    def cpu(self) -> Optional[Cpu]:
         """Device CPU information"""
         return self._device.cpu
 
@@ -157,12 +158,16 @@ class Peripheral(Mapping):
         self._reg_props: bindings.RegisterProperties = (
             self._peripheral.get_register_properties(base_props=base_reg_props)
         )
-        self._values: Dict[int, int] = {}
+        self._contents: Dict[int, int] = {}
 
     @property
     def name(self) -> str:
         """Name of the peripheral."""
         return self._peripheral.name
+
+    @property
+    def path(self) -> str:
+        return self.name
 
     @property
     def version(self) -> Optional[str]:
@@ -199,22 +204,36 @@ class Peripheral(Mapping):
     def registers(self) -> Mapping[str, RegisterType]:
         """Mapping of top-level registers in the peripheral, indexed by name."""
         return LazyStaticMapping(
-            keys=self._register_tree.keys(), factory=self._register_factory
+            keys=self._register_descriptions.keys(), factory=self._register_factory
         )
+
+    def _register_factory(self, name: str) -> RegisterType:
+        """
+        Instantiate the register with the given name.
+        Called on the first access to the register.
+        """
+        return _create_register_instance(self._register_descriptions[name], peripheral=self)
 
     def recursive_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
 
-        :param absolute_addresses: If true,
-        :param leaf_only: Only
+        :param absolute_addresses: yield absolute addresses. If False, yield addresses relative to
+        the base address of the peripheral.
+        :param leaf_only: Only yield physical registers, i.e. those that have a value.
         """
-        for register_name in self._register_tree:
+        for register_name in self._register_descriptions:
             yield from self[register_name].recursive_iter(leaf_only)
 
-    def memory_iter(self, absolute_addresses: bool = True):
-        """TODO"""
+    def memory_iter(self, absolute_addresses: bool = True) -> Iterator[Tuple[int, Register]]:
+        """
+        Iterator over tuples of (address, register).
+        Only physical registers are returned, i.e. those that have a value.
+
+        :param absolute_addresses: yield absolute addresses. If False, yield addresses relative to
+        the base address of the peripheral.
+        """
         for register in self.recursive_iter(leaf_only=True):
             address = register.address if absolute_addresses else register.offset
             yield address, register
@@ -225,8 +244,11 @@ class Peripheral(Mapping):
         return dict(self.memory_iter())
 
     @cached_property
-    def _register_tree(self) -> Mapping[str, _RegisterDescription]:
-        """TODO"""
+    def _register_descriptions(self) -> Mapping[str, _RegisterDescription]:
+        """
+        Compute the immutable descriptions of the registers contained in the peripheral, taking into
+        account registers derived from the base peripheral, if any.
+        """
         # Add the registers defined in this peripheral
         registers = _extract_register_descriptions(
             self._peripheral.registers, self._reg_props
@@ -240,7 +262,7 @@ class Peripheral(Mapping):
             # If the register properties are equal, then it is possible to reuse all the immutable
             # properties from the base peripheral.
             if self._base_peripheral._reg_props == self._reg_props:
-                base_registers = self._base_peripheral._register_tree
+                base_registers = self._base_peripheral._register_descriptions
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
             else:
@@ -260,10 +282,6 @@ class Peripheral(Mapping):
 
         return registers
 
-    def _register_factory(self, name: str) -> RegisterType:
-        """Instantiate the register with the given name."""
-        return _create_register_instance(self._register_tree[name], peripheral=self)
-
     def __getitem__(self, name: str) -> Register:
         """
         :param name: Name of the register to get.
@@ -282,7 +300,7 @@ class Peripheral(Mapping):
         :param name: Name of the register to update.
         :param value: The raw register value to write to the specified register.
         """
-        self[name].value = value
+        self[name].content = value
 
     def __iter__(self):
         """Iterate over the names of registers in the peripheral."""
@@ -293,11 +311,11 @@ class Peripheral(Mapping):
         return len(self.registers)
 
     def __repr__(self) -> str:
-        return f"Peripheral {self.name.upper()}@{hex(self.base_address)}"
+        return f"{self.__class__} {self.name.upper()}@{hex(self.base_address)}"
 
     def __str__(self) -> str:
-        periph = {hex(k): v for k, v in self.memory_map.items() if v.modified}
-        return f"Peripheral {self.name.upper()}@{hex(self.base_address)}:\n{pformat(periph)}"
+        modified_memory_values = {hex(k): v for k, v in self.memory_map.items() if v.modified}
+        return f"{repr(self)}:\n{pformat(modified_memory_values)}"
 
 
 class _RegisterDescription(NamedTuple):
@@ -339,11 +357,11 @@ class _RegisterBase:
         """
         Initialize the class attribute(s).
 
-        :param description: Register description
-        :param peripheral: Register name
-        :param instance_offset: Address offset inherited from the parent register
-        :param index: Index of this register in the parent register, if applicable
-        :param full_name_prefix: String prefixed to the register name to get the full name
+        :param description: Register description.
+        :param peripheral: Parent peripheral.
+        :param instance_offset: Address offset inherited from the parent register.
+        :param index: Index of this register in the parent register, if applicable.
+        :param full_name_prefix: String prefixed to the register name to get the full name.
         """
         self._description: _RegisterDescription = description
         self._peripheral: Peripheral = peripheral
@@ -384,27 +402,24 @@ class _RegisterBase:
         return self._description.reg_props.access
 
     @property
-    def reset_value(self) -> int:
+    def reset_content(self) -> int:
         """Register reset value."""
         return self._description.reg_props.reset_value
 
     @property
     def reset_mask(self) -> int:
-        """"""
+        """Mask of bits in the register that are affected by a reset."""
         return self._description.reg_props.reset_mask
 
     @property
-    def write_action(self) -> ModifiedWriteValues:
-
-
-    @property
-    def dimensions(self) -> Optional[Dimensions]:
-        """Dimensions of the register, if specified."""
-        return self._description.dim_props
+    def write_action(self) -> WriteAction:
+        """Side effect of writing the register"""
+        return self._description.element.modified_write_values
 
     @property
-    def has_value(self) -> bool:
-        return False
+    def is_logical(self) -> bool:
+        """Check if a register is logical, a collection of other registers"""
+        return True
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__} {self.full_name} @ {hex(self.offset)}"
@@ -435,7 +450,7 @@ class RegisterStruct(_RegisterBase, Mapping):
             factory=self._register_factory,
         )
 
-    def recursive_iter(self, leaf_only: bool = False):
+    def recursive_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
         """TODO"""
         if not leaf_only:
             yield self
@@ -453,9 +468,12 @@ class RegisterStruct(_RegisterBase, Mapping):
                 f"does not contain a register named '{name}'"
             ) from e
 
-    def __setitem__(self, name: str, value: int) -> None:
+    def __setitem__(self, name: str, content: int) -> None:
         """Set the value of a register by name"""
-        self[name].value = value
+        try:
+            self[name].content = content
+        except AttributeError as e:
+            raise TypeError(f"{self[name]} does not have content") from e
 
     def __iter__(self) -> Iterator[str]:
         """Iterate over the names of registers in the register structure"""
@@ -497,52 +515,52 @@ class Register(_RegisterBase, Mapping):
     @property
     def modified(self) -> bool:
         """True if the register contains a different value now than at reset."""
-        return self.value != self.reset_value
+        return self.content != self.reset_content
 
     @property
-    def value(self) -> int:
+    def content(self) -> int:
         """Current value of the register."""
-        return self._peripheral._values.setdefault(self.offset, self.reset_value)
+        return self._peripheral._contents.setdefault(self.offset, self.reset_content)
 
-    @value.setter
-    def value(self, new_value: int) -> None:
+    @content.setter
+    def content(self, new_content: int) -> None:
         """
         Set the value of the register.
 
         :param new_value: New value for the register.
         """
-        self.set_value(new_value)
+        self.set_content(new_content)
 
-    def set_value(self, new_value: int, mask: Optional[int] = None):
+    def set_content(self, new_content: int, mask: Optional[int] = None):
         """
         Set the value of the register.
 
         :param value: New value for the register.
         :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
         """
-        if new_value > 0 and log2(new_value) > self._description.reg_props.size:
+        if new_content > 0 and log2(new_content) > self._description.reg_props.size:
             raise ValueError(
-                f"Value {hex(new_value)} is too large for {self._description.reg_props.size}-bit "
+                f"Value {hex(new_content)} is too large for {self._description.reg_props.size}-bit "
                 f"register {self.full_name}."
             )
 
         for field in self.values():
             # Only check fields that are affected by the mask
             if mask is None or mask & field.mask:
-                field_value = field._extract_value_from_register(new_value)
+                field_value = field._extract_value_from_register(new_content)
                 if field_value not in field.allowed_values:
                     raise ValueError(
-                        f"Value {hex(new_value)} is invalid for register {self.full_name}, as field "
+                        f"Value {hex(new_content)} is invalid for register {self.full_name}, as field "
                         f"{field.full_name} does not accept the value {hex(field_value)}."
                     )
 
         if mask is not None:
             # Update only the bits indicated by the mask
-            new_value = (self.value & ~mask) | (new_value & mask)
+            new_content = (self.content & ~mask) | (new_content & mask)
         else:
-            new_value = new_value
+            new_content = new_content
 
-        self._peripheral._values[self.offset] = new_value
+        self._peripheral._contents[self.offset] = new_content
 
     @property
     def fields(self) -> Mapping[str, Field]:
@@ -596,7 +614,7 @@ class Register(_RegisterBase, Mapping):
 
     def __repr__(self) -> str:
         """Basic representation of the class object."""
-        return f"{super().__repr__()} {'(modified) ' if self.modified else ''}= 0x{self.value:08x}"
+        return f"{super().__repr__()} {'(modified) ' if self.modified else ''}= 0x{self.content:08x}"
 
     def __str__(self) -> str:
         """String representation of the class."""
@@ -604,7 +622,7 @@ class Register(_RegisterBase, Mapping):
         attr_str = pformat(
             {
                 "Modified": self.modified,
-                "Value": f"{self.value:08x}",
+                "Value": f"{self.content:08x}",
                 "Fields": {k: str(v) for k, v in self.items()},
             }
         )
@@ -628,6 +646,11 @@ class _DimensionedRegister(_RegisterBase, Sequence):
             length=len(self._array_offsets), factory=self._register_factory
         )
         super().__init__(description=description, **kwargs)
+
+    @property
+    def dimensions(self) -> Dimensions:
+        """Dimensions of the register array."""
+        return self._description.dim_props
 
     def recursive_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
         """"""
@@ -790,7 +813,7 @@ class Field:
     @property
     def value(self) -> int:
         """The value of the field."""
-        return self._extract_value_from_register(self._register.value)
+        return self._extract_content_from_register(self._register.content)
 
     @value.setter
     def value(self, new_value: Union[int, str]):
@@ -826,12 +849,12 @@ class Field:
                 )
             resolved_value = self.enums[new_value]
 
-        self._register.set_value(resolved_value << self.bit_offset, self.mask)
+        self._register.set_content(resolved_value << self.bit_offset, self.mask)
 
     @property
     def reset_value(self) -> int:
         """Default field value."""
-        return self._extract_value_from_register(self._register.reset_value)
+        return self._extract_content_from_register(self._register.reset_content)
 
     @property
     def bit_offset(self) -> int:
@@ -850,7 +873,31 @@ class Field:
 
     @property
     def access(self) -> Access:
-        ...
+        """Access property of the field."""
+        if (field_access := self._description.element.access) is not None:
+            return field_access
+        return self._register.access
+
+    @property
+    def write_action(self) -> WriteAction:
+        """Side effect of writing to the field."""
+        if (field_write_action := self._description.element.modified_write_values) is not None:
+            return field_write_action
+        return self._register.write_action
+
+    @property
+    def read_action(self) -> ReadAction:
+        """Side effect of reading from the field."""
+        if (field_read_action := self._description.element.read_action) is not None:
+            return field_read_action
+        return self._register.read_action
+
+    @property
+    def write_constraint(self) -> Optional[WriteConstraint]:
+        """Constraints on writing to the field."""
+        if (field_write_constraint := self._description.element.write_constraint) is not None:
+            return field_write_constraint
+        return self._register.write_constraint
 
     @property
     def allowed_values(self) -> Collection[int]:
@@ -889,16 +936,16 @@ class Field:
         """
         self._allowed_values = range(2**self.bit_width)
 
-    def _extract_value_from_register(self, register_value: int) -> int:
+    def _extract_content_from_register(self, register_content: int) -> int:
         """
         Internal method for extracting the field value from the parent register value.
 
         :param register_value: Value of the parent register
         :return: Field value extracted based on the field bit range
         """
-        return (register_value & self.mask) >> self.bit_offset
+        return (register_content & self.mask) >> self.bit_offset
 
-    def _trailing_zero_adjusted(self, value):
+    def _trailing_zero_adjusted(self, content: int) -> int:
         """
         Internal method that checks and adjusts a given value for trailing zeroes if it exceeds
         the bit width of its field. Some values are simplest to encode as a full 32-bit value even
@@ -911,10 +958,10 @@ class Field:
 
         width_max = 2**self.bit_width
 
-        if value > width_max:
+        if content > width_max:
             max_val = width_max - 1
             max_val_hex_len = len(f"{max_val:x}")
-            hex_val = f"{value:0{8}x}"  # leading zeros, 8-byte max, in hex
+            hex_val = f"{content:0{8}x}"  # leading zeros, 8-byte max, in hex
             trailing = hex_val[max_val_hex_len:]  # Trailing zeros
 
             if int(trailing, 16) != 0:
@@ -926,7 +973,7 @@ class Field:
             if adjusted <= max_val:
                 return adjusted
 
-        return value
+        return content
 
     def __repr__(self):
         """Basic representation of the class."""
@@ -995,6 +1042,7 @@ def _extract_register_descriptions(
 
     :param elements: Register level elements to process.
     :param base_reg_props: Register properties inherited from the parent peripheral.
+
     :return: Map of register descriptions, indexed by name.
     """
     result, _ = _extract_register_descriptions_helper(elements, base_reg_props)
@@ -1006,7 +1054,7 @@ def _extract_register_descriptions_helper(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
-) -> Tuple[Mapping[str, _RegisterDescription], Optional[int]]:
+) -> Tuple[Mapping[str, _RegisterDescription], int]:
     """
     Helper that recursively extracts the names, addresses, register properties, dimensions,
     fields etc. of a collection of SVD register level elements.
@@ -1076,7 +1124,7 @@ def _extract_register_descriptions_helper(
 
     # No elements; return a dummy value
     if not address_descriptions:
-        return {}, None
+        return {}, 0
 
     sorted_address_descriptions = sorted(address_descriptions, key=op.itemgetter(0))
 

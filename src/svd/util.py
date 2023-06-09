@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import inspect
+import typing
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
@@ -122,7 +123,10 @@ MISSING = _Missing
 
 @dataclass
 class ElemProperty:
-    """Represents an XML element property."""
+    """
+    Represents an XML element property.
+    This class is intended to be used as a property getter.
+    """
 
     name: str
     klass: type
@@ -130,10 +134,7 @@ class ElemProperty:
     default_factory: Union[Callable[[], Any], MISSING]
 
     def __call__(self, node: objectify.ObjectifiedElement):
-        """
-        Get the element property value from the given node.
-        This method is intended to be used as a property getter.
-        """
+        """Get the element property value from the given node."""
         try:
             svd_obj = node.__getattr__(self.name)
         except AttributeError:
@@ -156,7 +157,7 @@ def elem(
     *,
     default: Union[Any, MISSING] = MISSING,
     default_factory: Union[Callable[[], Any], MISSING] = MISSING,
-) -> Any:
+):
     """
     Create a property that extracts an element from an XML node.
     Only one of default or default_factory can be set.
@@ -219,7 +220,7 @@ def attr(
     converter: Optional[Callable[[str], Any]] = None,
     default: Union[Any, MISSING] = MISSING,
     default_factory: Union[Callable[[], Any], MISSING] = MISSING,
-) -> Any:
+):
     """
     Create a property that extracts an attribute from an XML node.
     Only one of default or default_factory can be set.
@@ -245,13 +246,18 @@ def attr(
     )
 
 
+C = TypeVar("C")
+
+
 def binding(
     element_classes: List[Type[objectify.ObjectifiedElement]],
-) -> Callable[[type], type]:
+) -> Callable[[Type[C]], Type[C]]:
     """ """
 
-    def decorator(klass: type) -> type:
+    def decorator(klass: Type[C]) -> Type[C]:
         xml_props: Dict[str, property] = getattr(klass, "_xml_props", {})
+
+        type_hints = typing.get_type_hints(klass)
 
         for name, prop in inspect.getmembers(klass):
             if not isinstance(prop, property):
@@ -268,6 +274,10 @@ def binding(
             if isinstance(prop_info, ElemProperty) and prop_info.klass == SELF_CLASS:
                 prop_info.klass = klass
 
+            # Update the return annotation of the property to match the corresponding class member
+            if (member_annotation := type_hints.get(name)) is not None:
+                prop.__annotations__["return"] = member_annotation
+
             xml_props[name] = prop
 
         setattr(klass, "_xml_props", xml_props)
@@ -277,6 +287,9 @@ def binding(
         return klass
 
     return decorator
+
+
+def get_bindings()
 
 
 def get_binding_props(klass: type) -> Dict[str, property]:
