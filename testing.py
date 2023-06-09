@@ -26,9 +26,10 @@ def main():
     print(f"{t_parse=:.2f}s")
 
     t_mem_map_start = perf_counter()
+    peripheral = device.peripherals["UICR_NS"]
     mem = peripheral.memory_map
     first = next(iter(mem.values()))
-    print(first, isinstance(first, Iterable))
+    print(first)
     t_mem_map = perf_counter() - t_mem_map_start
     print(f"{t_mem_map=:.2f}s")
     """
