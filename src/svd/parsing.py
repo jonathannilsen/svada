@@ -96,8 +96,8 @@ class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
         for tag, classes in tag_classes.items():
             if len(classes) == 1:
                 # Add the class to the namespace
-                # Namespace is intended to be used as a decorator, so the syntax is a little odd
                 element_class = classes.pop()
+                # note: namespace is a decorator, so the syntax here is a little odd
                 namespace(tag)(element_class)
                 one_tag.add(tag)
 
@@ -124,6 +124,9 @@ class _SecondLevelTagLookup(ET.PythonElementClassLookup):
         self,
         lookup_table: Dict[Tuple[Optional[str], str], objectify.ObjectifiedElement],
     ):
+        """
+        :param lookup_table: Lookup table mapping a tuple of (parent tag, tag) to an element class.
+        """
         self._lookup_table = lookup_table
 
     def lookup(self, _document, element: ET._Element):

@@ -51,7 +51,7 @@ class Device(Mapping):
 
     def __init__(self, device: bindings.DeviceElement):
         self._device: bindings.DeviceElement = device
-        self._reg_props: RegisterProperties = self._device.get_register_properties()
+        self._reg_props: RegisterProperties = self._device.register_properties
 
         peripherals = {}
 
@@ -102,7 +102,7 @@ class Device(Mapping):
 
     @property
     def bus_bit_width(self) -> int:
-        """Maximum data bits supported by the bus in a single data transfer."""
+        """Maximum data bits supported by the data bus in a single transfer."""
         return self._device.width
 
     @property
@@ -1084,7 +1084,7 @@ def _extract_register_descriptions_helper(
         register.name: register for _, register in sorted_address_descriptions
     }
 
-    return descriptions, min_address_total
+    return descriptions, int(min_address_total)
 
 
 def _extract_field_descriptions(

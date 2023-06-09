@@ -18,6 +18,7 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Type,
     TypeVar,
     Union,
 )
@@ -244,10 +245,12 @@ def attr(
     )
 
 
-def binding(element_classes: List[objectify.ObjectifiedElement]):
+def binding(
+    element_classes: List[Type[objectify.ObjectifiedElement]],
+) -> Callable[[type], type]:
     """ """
 
-    def decorator(klass: type):
+    def decorator(klass: type) -> type:
         xml_props: Dict[str, property] = getattr(klass, "_xml_props", {})
 
         for name, prop in inspect.getmembers(klass):
@@ -284,7 +287,7 @@ def get_binding_props(klass: type) -> Dict[str, property]:
         raise ValueError(f"Class {klass} is not a binding") from e
 
 
-def enum_wrapper(
+def make_enum_wrapper(
     enum_cls: type[CaseInsensitiveStrEnum],
 ) -> type[objectify.ObjectifiedDataElement]:
     """
@@ -300,7 +303,7 @@ def enum_wrapper(
     return EnumWrapper
 
 
-def iter_children(
+def iter_element_children(
     element: Optional[objectify.ObjectifiedElement], *tags: str
 ) -> Iterator[objectify.ObjectifiedElement]:
     """
@@ -357,7 +360,7 @@ class LazyStaticList(Sequence[T]):
         :param factory: Factory function which is called to initialize
                         new elements.
         """
-        self._factory = factory
+        self._factory: Callable[[int], T] = factory
         self._storage: List[Optional[T]] = [None for _ in range(length)]
 
     def __getitem__(self, index: int) -> T:
@@ -374,14 +377,18 @@ class LazyStaticList(Sequence[T]):
 
 
 def iter_merged(a: Iterable[T], b: Iterable[T], key: Callable[[T], Any]) -> Iterator[T]:
+    """Iterator that merges two sorted iterables."""
+
     class _End:
+        """Sentinel value for the end of an iterator."""
+
         ...
 
     iter_a = iter(a)
     iter_b = iter(b)
 
     item_a = next(iter_a, _End)
-    item_b = next(item_b, _End)
+    item_b = next(iter_b, _End)
 
     while True:
         if item_a is not _End and item_b is not _End:
