@@ -30,6 +30,8 @@ from typing import (
 )
 from pprint import pformat
 
+from svd.peripheral import RegisterType
+
 from . import bindings
 from .bindings import (
     Access,
@@ -44,6 +46,19 @@ from .bindings import (
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
+
+# TODO: flat iteration?
+# TODO: refine iteration methods
+
+# Types of iteration/access that is required:
+# - iterate over descriptions in a flat manner (flat_iter?)
+#    - This changes the behavior of _DimensionedArrays to not iterate over individual elements
+# - iterate over leaf registers (or maybe just the values?)
+# - get a map of values (with optional granularity? can default to address_unit_bits and use endian)
+
+
+# TODO: fill in all values at peripheral construction
+# Could allocate a map of some sort based on address block, fill in with values during traversal
 
 class Device(Mapping):
     """
@@ -66,6 +81,7 @@ class Device(Mapping):
 
             peripheral = Peripheral(
                 peripheral_element,
+                device=self,
                 base_reg_props=self._reg_props,
                 base_peripheral=base_peripheral,
             )
@@ -120,6 +136,8 @@ class Device(Mapping):
                 f"{self.__class__} {self.name} does not contain a peripheral named '{name}'"
             ) from e
 
+    # TODO: __setitem__ for transplanting a peripheral from another device? (hate it but may be necessary)
+
     def __iter__(self) -> Iterator[str]:
         """Iterate over the names of peripherals in the device."""
         return iter(self._peripherals)
@@ -141,7 +159,8 @@ class Peripheral(Mapping):
 
     def __init__(
         self,
-        peripheral: bindings.PeripheralElement,
+        element: bindings.PeripheralElement,
+        device: Device,
         base_reg_props: bindings.RegisterProperties,
         base_peripheral: Optional[Peripheral] = None,
     ):
@@ -152,9 +171,10 @@ class Peripheral(Mapping):
         :param base_reg_props: Register properties inherited from the parent device.
         :param base_peripheral: Base peripheral to derive this peripheral from, if any.
         """
-        self._peripheral: bindings.PeripheralElement = peripheral
+        self._peripheral: bindings.PeripheralElement = element
+        self._device: Device = device
         self._base_peripheral: Optional[Peripheral] = base_peripheral
-        self._base_address: int = peripheral.base_address
+        self._base_address: int = element.base_address
         self._reg_props: bindings.RegisterProperties = (
             self._peripheral.get_register_properties(base_props=base_reg_props)
         )
@@ -214,7 +234,7 @@ class Peripheral(Mapping):
         """
         return _create_register_instance(self._register_descriptions[name], peripheral=self)
 
-    def recursive_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
+    def register_iter(self, flat: bool = False, leaf_only: bool = False) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -234,7 +254,7 @@ class Peripheral(Mapping):
         :param absolute_addresses: yield absolute addresses. If False, yield addresses relative to
         the base address of the peripheral.
         """
-        for register in self.recursive_iter(leaf_only=True):
+        for register in self.register_iter(leaf_only=True):
             address = register.address if absolute_addresses else register.offset
             yield address, register
 
@@ -242,6 +262,12 @@ class Peripheral(Mapping):
     def memory_map(self) -> Dict[int, RegisterType]:
         """Map of the peripheral register contents in memory."""
         return dict(self.memory_iter())
+
+
+    @property
+    def contents(self) -> Mapping[int, int]:
+        ...
+
 
     @cached_property
     def _register_descriptions(self) -> Mapping[str, _RegisterDescription]:
@@ -598,7 +624,7 @@ class Register(_RegisterBase, Mapping):
         :param value: A raw numeric value, or a field enumeration, to write
             to the selected register field.
         """
-        self[key].value = value
+        self[key].content = value
 
     def __iter__(self) -> Iterator[str]:
         """Iterate over the field names in the register."""
@@ -699,6 +725,18 @@ class RegisterStructArray(_DimensionedRegister):
         return RegisterStruct
 
 
+    def recursive_iter(self, flat: bool = False, leaf_only: bool = False) -> Iterator[RegisterType]:
+        """"""
+        if flat or not leaf_only:
+            yield self
+
+        if flat:
+            yield from self[0].recursive_iter(flat, leaf_only)
+        else:
+            yield
+
+
+
 class RegisterArray(_DimensionedRegister):
     """
     Array of Register objects.
@@ -708,6 +746,12 @@ class RegisterArray(_DimensionedRegister):
     @property
     def member_type(self) -> type:
         return Register
+
+    def recursive_iter(self, flat: bool, leaf_only: bool = False) -> Iterator[RegisterType]:
+        if flat:
+            yield self
+        else:
+            yield from super().
 
 
 # Union of all register types
@@ -811,12 +855,12 @@ class Field:
         return f"{self._register.full_name}.{self.name}"
 
     @property
-    def value(self) -> int:
+    def content(self) -> int:
         """The value of the field."""
         return self._extract_content_from_register(self._register.content)
 
-    @value.setter
-    def value(self, new_value: Union[int, str]):
+    @content.setter
+    def content(self, new_value: Union[int, str]):
         """
         Set the value of the field.
 
@@ -852,7 +896,7 @@ class Field:
         self._register.set_content(resolved_value << self.bit_offset, self.mask)
 
     @property
-    def reset_value(self) -> int:
+    def reset_content(self) -> int:
         """Default field value."""
         return self._extract_content_from_register(self._register.reset_content)
 
@@ -927,7 +971,7 @@ class Field:
     @property
     def modified(self) -> bool:
         """True if the field contains a different value now than at reset."""
-        return self.value != self.reset_value
+        return self.content != self.reset_content
 
     def unconstrain(self) -> None:
         """
@@ -977,7 +1021,7 @@ class Field:
 
     def __repr__(self):
         """Basic representation of the class."""
-        return f"Field {self.name} {'(modified) ' if self.modified else ''}= {hex(self.value)}"
+        return f"Field {self.name} {'(modified) ' if self.modified else ''}= {hex(self.content)}"
 
     def __str__(self):
         attrs = {
