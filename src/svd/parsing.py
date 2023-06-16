@@ -15,7 +15,7 @@ from lxml import objectify
 
 from . import bindings
 from . import util
-from .peripheral import Device
+from .device import Device
 
 
 class SvdParseException(RuntimeError):
