@@ -561,11 +561,11 @@ class Register(_RegisterBase, Mapping):
         for field in self.values():
             # Only check fields that are affected by the mask
             if mask is None or mask & field.mask:
-                field_value = field._extract_value_from_register(new_content)
-                if field_value not in field.allowed_values:
+                field_content = field._extract_content_from_register(new_content)
+                if field_content not in field.allowed_values:
                     raise ValueError(
                         f"Value {hex(new_content)} is invalid for register {self.path}, as field "
-                        f"{field.full_name} does not accept the value {hex(field_value)}."
+                        f"{field.full_name} does not accept the value {hex(field_content)}."
                     )
 
         if mask is not None:
