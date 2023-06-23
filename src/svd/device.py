@@ -95,6 +95,11 @@ class Device(Mapping):
         return self._device.vendor_id
 
     @property
+    def _qualified_name(self) -> str:
+        """Name of the device, including vendor and series."""
+        return f"{self.vendor_id or ''}::{self.series or ''}::{self.name}"
+
+    @property
     def cpu(self) -> Optional[Cpu]:
         """Device CPU information"""
         return self._device.cpu
@@ -138,6 +143,12 @@ class Device(Mapping):
         :return: Number of peripherals in the device.
         """
         return len(self._peripherals)
+
+    def __repr__(self) -> str:
+        return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__} {self._qualified_name}"
 
 
 class Peripheral(Mapping):
@@ -300,16 +311,16 @@ class Peripheral(Mapping):
         return len(self.registers)
 
     def __repr__(self) -> str:
-        return f"{self.__class__} {self.name.upper()}@{hex(self.base_address)}"
-
-    def __str__(self) -> str:
         modified_memory_values = {
-            hex(reg.offset): reg.content
+            f"0x{reg.offset:04x}": reg.content
             for reg in self.register_iter(leaf_only=True)
             if reg.modified
         }
 
-        return f"{repr(self)}:\n{pformat(modified_memory_values)}"
+        return f"{str(self)}:\n{pformat(modified_memory_values, indent=2)}"
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__} {self.name.upper()}@{hex(self.base_address)}"
 
 
 class _RegisterDescription(NamedTuple):
@@ -408,8 +419,11 @@ class _RegisterBase:
         """Side effect of writing the register"""
         return self._description.element.modified_write_values
 
+    def __repr__(self) -> str:
+        return str(self)
+
     def __str__(self) -> str:
-        return f"{self.__class__.__name__} {self.path} @ {hex(self.offset)}"
+        return f"{self.__class__.__name__} {self.path}@{hex(self.offset)}"
 
     @property
     def _path_with_peripheral(self) -> str:
@@ -495,6 +509,12 @@ class RegisterStruct(_RegisterBase, Mapping):
         :return: Number of registers in the register structure
         """
         return len(self._registers)
+
+    def __repr__(self) -> str:
+        return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
+
+    def __str__(self) -> str:
+        return super().__str__()
 
 
 class Register(_RegisterBase, Mapping):
@@ -588,7 +608,9 @@ class Register(_RegisterBase, Mapping):
         for field in self.values():
             field.unconstrain()
 
-    def register_iter(self, flat: bool = False, leaf_only: bool = False) -> Iterator[RegisterType]:
+    def register_iter(
+        self, flat: bool = False, leaf_only: bool = False
+    ) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
@@ -631,18 +653,19 @@ class Register(_RegisterBase, Mapping):
         return len(self._fields)
 
     def __repr__(self) -> str:
-        return f"{super().__repr__()} {'(modified) ' if self.modified else ''}= 0x{self.content:08x}"
-
-    def __str__(self) -> str:
         attr_str = pformat(
             {
                 "Modified": self.modified,
-                "Value": f"{self.content:08x}",
+                "Value": f"0x{self.content:08x}",
                 "Fields": {k: str(v) for k, v in self.items()},
-            }
+            },
+            indent=2,
         )
 
-        return f"{super().__str__()}:\n{textwrap.indent(attr_str, '  ')}"
+        return f"{super().__repr__()}:\n{textwrap.indent(attr_str, '  ')}"
+
+    def __str__(self) -> str:
+        return f"{super().__str__()} {'(modified) ' if self.modified else ''}= 0x{self.content:08x}"
 
 
 class _DimensionedRegister(_RegisterBase, Sequence):
@@ -685,10 +708,7 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         try:
             return self._array[index]
         except IndexError as e:
-            raise IndexError(
-                f"{self.__class__} {self._path_with_peripheral}<{len(self)}>: "
-                f"array index {index} is out of range"
-            ) from e
+            raise IndexError(f"{self!s}: array index {index} is out of range") from e
 
     def __iter__(self) -> Iterator[RegisterType]:
         """
@@ -702,6 +722,12 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         """
         return len(self._array)
 
+    def __repr__(self) -> str:
+        return (f"{self.__class__.__name__} "
+                f"{self._path_with_peripheral}<{len(self)}> @ 0x{self.offset:08x}")
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__} {self.path}<{len(self)}> @ 0x{self.offset:08x}"
 
 class RegisterStructArray(_DimensionedRegister):
     """
@@ -1023,12 +1049,6 @@ class Field:
         return content
 
     def __repr__(self):
-        return (
-            f"{self.__class__} {self.name} "
-            f"{'(modified) ' if self.modified else ''}= {hex(self.content)}"
-        )
-
-    def __str__(self):
         attrs = {
             "Allowed": self.allowed_values,
             "Modified": self.modified,
@@ -1036,7 +1056,14 @@ class Field:
             "Bit width": self.bit_width,
             "Enums": self.enums,
         }
-        return f"{self.__class__} {self.name}: {pformat(attrs)}"
+
+        return f"{self.__class__.__name__} {self.name}: {pformat(attrs)}"
+
+    def __str__(self):
+        return (
+            f"{self.__class__} {self.name} "
+            f"{'(modified) ' if self.modified else ''}= {hex(self.content)}"
+        )
 
 
 def _topo_sort_derived_peripherals(
@@ -1218,9 +1245,9 @@ def _extract_register_descriptions_helper(
             else:
                 min_address = address
 
-            undimensioned_contents = list(chain.from_iterable(
-                r.reset_contents for r in child_results
-            ))
+            undimensioned_contents = list(
+                chain.from_iterable(r.reset_contents for r in child_results)
+            )
 
         description = _RegisterDescription(
             element=element,
