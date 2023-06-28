@@ -11,6 +11,7 @@ Python representation of a SVD device.
 from __future__ import annotations
 
 import math
+import re
 import textwrap
 from collections import ChainMap, defaultdict
 from collections.abc import Mapping
@@ -18,6 +19,7 @@ from functools import cached_property
 from itertools import chain
 from types import MappingProxyType
 from typing import (
+    Any,
     Collection,
     List,
     MutableMapping,
@@ -43,6 +45,7 @@ from .bindings import (
     ReadAction,
     WriteConstraint,
 )
+from .path import SvdPath
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
@@ -346,18 +349,16 @@ class _RegisterBase:
     __slots__ = [
         "_description",
         "_peripheral",
+        "_path",
         "_instance_offset",
-        "_index",
-        "_path_prefix",
     ]
 
     def __init__(
         self,
         description: _RegisterDescription,
         peripheral: Peripheral,
+        path: SvdPath,
         instance_offset: int = 0,
-        index: Optional[int] = None,
-        path_prefix: str = "",
     ):
         """
         :param description: Register description.
@@ -368,21 +369,18 @@ class _RegisterBase:
         """
         self._description: _RegisterDescription = description
         self._peripheral: Peripheral = peripheral
+        self._path: SvdPath = path
         self._instance_offset: int = instance_offset
-        self._index: Optional[int] = index
-        self._path_prefix: str = path_prefix
 
     @property
     def name(self) -> str:
         """Name of the register."""
-        if self._index is not None:
-            return f"{self._description.name}[{self._index}]"
-        return self._description.name
+        return self.path.name
 
     @property
-    def path(self) -> str:
-        """Full qualified name of the register."""
-        return f"{self._path_prefix}{self.name}"
+    def path(self) -> SvdPath:
+        """Full path to the register."""
+        return self._path
 
     @property
     def address(self) -> int:
@@ -452,7 +450,7 @@ class RegisterStruct(_RegisterBase, Mapping):
                 description=self._description.registers[name],
                 peripheral=self._peripheral,
                 instance_offset=self._instance_offset,
-                path_prefix=f"{self.path}.",
+                path=self.path.join(name),
             ),
         )
 
@@ -687,8 +685,7 @@ class _DimensionedRegister(_RegisterBase, Sequence):
                 description=self._description,
                 peripheral=self._peripheral,
                 instance_offset=self._instance_offset + self._array_offsets[i],
-                index=i,
-                path_prefix=self._path_prefix,
+                path=self.path.join(i),
             ),
         )
 
@@ -786,7 +783,7 @@ RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArra
 
 
 def _create_register_instance(
-    description: _RegisterDescription, index: Optional[int] = None, **kwargs
+    description: _RegisterDescription, is_element: bool = False, **kwargs
 ) -> RegisterType:
     """
     Create a mutable register instance from a register description.
@@ -796,13 +793,13 @@ def _create_register_instance(
     :return: Register instance
     """
     if description.registers is not None:
-        if description.dim_props is not None and index is None:
+        if description.dim_props is not None and not is_element:
             return RegisterStructArray(description=description, **kwargs)
-        return RegisterStruct(description=description, index=index, **kwargs)
+        return RegisterStruct(description=description, **kwargs)
     else:
-        if description.dim_props is not None and index is None:
+        if description.dim_props is not None and not is_element:
             return RegisterArray(description=description, **kwargs)
-        return Register(description=description, index=index, **kwargs)
+        return Register(description=description, **kwargs)
 
 
 class _FieldDescription(NamedTuple):
@@ -875,9 +872,9 @@ class Field:
         return self._description.name
 
     @property
-    def path(self) -> str:
+    def path(self) -> SvdPath:
         """The full name of the field, including the register name."""
-        return f"{self._register.path}.{self.name}"
+        return self._register.path.join(self.name)
 
     @property
     def content(self) -> int:
