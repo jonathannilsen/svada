@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import enum
 import inspect
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -17,7 +16,9 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
+    Sequence,
     Type,
     TypeVar,
     Union,

@@ -148,10 +148,11 @@ class Device(Mapping):
         return len(self._peripherals)
 
     def __repr__(self) -> str:
-        return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
+        return f"[{self.__class__.__name__} {self._qualified_name}]"
+        #return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
 
-    def __str__(self) -> str:
-        return f"{self.__class__.__name__} {self._qualified_name}"
+    #def __str__(self) -> str:
+    #    return f"<{self.__class__.__name__} {self._qualified_name}>"
 
 
 class Peripheral(Mapping):
@@ -217,7 +218,7 @@ class Peripheral(Mapping):
         return LazyStaticMapping(
             keys=self._register_descriptions.keys(),
             factory=lambda name: _create_register_instance(
-                self._register_descriptions[name], peripheral=self
+                self._register_descriptions[name], path=SvdPath(name), peripheral=self
             ),
         )
 
@@ -428,6 +429,13 @@ class _RegisterBase:
         """Full path of the register including the parent peripheral"""
         return f"{self._peripheral.name}.{self.path}"
 
+    @property
+    def _array_index(self) -> Optional[int]:
+        """Index of the register in the parent array, if applicable."""
+        if not isinstance(self._path.parts[-1], int):
+            return None
+        return self._path.parts[-1]
+
 
 class RegisterStruct(_RegisterBase, Mapping):
     """
@@ -466,7 +474,7 @@ class RegisterStruct(_RegisterBase, Mapping):
 
         :return: Iterator over the registers in the peripheral.
         """
-        if not leaf_only and not (flat and self._index is not None):
+        if not leaf_only and not (flat and self._array_index is not None):
             yield self
 
         for register in self.values():
@@ -613,7 +621,7 @@ class Register(_RegisterBase, Mapping):
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
         """
-        if not flat or self._index is None:
+        if not flat or self._array_index is None:
             yield self
 
     def __getitem__(self, name: str) -> Field:
@@ -674,6 +682,7 @@ class _DimensionedRegister(_RegisterBase, Sequence):
     __slots__ = ["_array_offsets", "_array"]
 
     # Register type contained in the register array, to be set by child classes
+    # This annotation is just here to satisfy the type checker
     member_type: type
 
     def __init__(self, description: _RegisterDescription, **kwargs):

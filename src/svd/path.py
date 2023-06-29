@@ -1,7 +1,12 @@
+#
+# Copyright (c) 2023 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
 from __future__ import annotations
 
 import re
-from functools import cached_property
 from typing import Iterable, List, Optional, Tuple, Union
 
 
