@@ -45,7 +45,7 @@ from .bindings import (
     ReadAction,
     WriteConstraint,
 )
-from .path import SvdPath
+from .path import SPath
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
@@ -265,7 +265,7 @@ class Peripheral(Mapping):
         return LazyStaticMapping(
             keys=self._register_descriptions.keys(),
             factory=lambda name: _create_register_instance(
-                self._register_descriptions[name], path=SvdPath(name), peripheral=self
+                self._register_descriptions[name], path=SPath(name), peripheral=self
             ),
         )
 
@@ -403,7 +403,7 @@ class _RegisterBase:
         self,
         description: _RegisterDescription,
         peripheral: Peripheral,
-        path: SvdPath,
+        path: SPath,
         instance_offset: int = 0,
     ):
         """
@@ -415,7 +415,7 @@ class _RegisterBase:
         """
         self._description: _RegisterDescription = description
         self._peripheral: Peripheral = peripheral
-        self._path: SvdPath = path
+        self._path: SPath = path
         self._instance_offset: int = instance_offset
 
     @property
@@ -424,7 +424,7 @@ class _RegisterBase:
         return self.path.name
 
     @property
-    def path(self) -> SvdPath:
+    def path(self) -> SPath:
         """Full path to the register."""
         return self._path
 
@@ -935,7 +935,7 @@ class Field:
         return self._description.name
 
     @property
-    def path(self) -> SvdPath:
+    def path(self) -> SPath:
         """The full name of the field, including the register name."""
         return self._register.path.join(self.name)
 

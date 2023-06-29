@@ -10,7 +10,7 @@ import re
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 
-class SvdPath(Sequence[Union[str, int]]):
+class SPath(Sequence[Union[str, int]]):
     """Path to a SVD element"""
 
     __slots__ = "_parts"
@@ -18,14 +18,14 @@ class SvdPath(Sequence[Union[str, int]]):
     # TODO: docstrings
     # TODO: can parts reuse a slice of a SvdPart?
 
-    def __init__(self, *parts: Union[SvdPath, str, int]) -> None:
+    def __init__(self, *parts: Union[SPath, str, int]) -> None:
         if not parts:
             raise ValueError(f"Empty {self.__class__.__name__} not allowed")
 
         split_parts: List[Union[str, int]] = []
 
         for part in parts:
-            if isinstance(part, SvdPath):
+            if isinstance(part, SPath):
                 split_parts.extend(part.parts)
             elif isinstance(part, str):
                 if not part.isalpha():
@@ -60,17 +60,17 @@ class SvdPath(Sequence[Union[str, int]]):
         return None
 
     @property
-    def parent(self) -> SvdPath:
+    def parent(self) -> SPath:
         if len(self._parts) == 1:
             return self
-        return SvdPath(*self._parts[:-1])
+        return SPath(*self._parts[:-1])
 
-    def join(self, *other: Union[SvdPath, str, int]) -> SvdPath:
-        return SvdPath(*self.parts, *other)
+    def join(self, *other: Union[SPath, str, int]) -> SPath:
+        return SPath(*self.parts, *other)
 
-    def __getitem__(self, item: Union[int, slice]) -> Union[int, str, SvdPath]:
+    def __getitem__(self, item: Union[int, slice]) -> Union[int, str, SPath]:
         if isinstance(item, slice):
-            return SvdPath(*self.parts[item])
+            return SPath(*self.parts[item])
         else:
             return self.parts[item]
 
@@ -136,7 +136,7 @@ def main():
     # print(SvdPath("REG", 0).join(SvdPath("FIELD")))
     # print(SvdPath("REG", 0).join("REG2").join("FIELD"))
     # print(SvdPath(0).join(1).join(2).join("R[3]"))
-    print(SvdPath("A[0].B[2].C[1].FIELD"))
+    print(SPath("A[0].B[2].C[1].FIELD"))
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from .parsing import (
     parse,
     SvdParseException,
 )
-from .path import SvdPath
+from .path import SPath
 from .device import (
     Device,
     Peripheral,
