@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 
-class SvdPath:
+class SvdPath(Sequence[Union[str, int]]):
     """Path to a SVD element"""
 
     __slots__ = "_parts"
@@ -67,6 +67,15 @@ class SvdPath:
 
     def join(self, *other: Union[SvdPath, str, int]) -> SvdPath:
         return SvdPath(*self.parts, *other)
+
+    def __getitem__(self, item: Union[int, slice]) -> Union[int, str, SvdPath]:
+        if isinstance(item, slice):
+            return SvdPath(*self.parts[item])
+        else:
+            return self.parts[item]
+
+    def __len__(self) -> int:
+        return len(self.parts)
 
     def __repr__(self) -> str:
         return self._format_parts(self.parts)

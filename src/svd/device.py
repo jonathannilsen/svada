@@ -329,17 +329,24 @@ class Peripheral(Mapping):
 
         return info
 
-    def __getitem__(self, name: str) -> Register:
+    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> Register:
         """
-        :param name: Name of the register to get.
+        :param path: Name of the register to get, or a path to a register. # FIXME
 
         :return: The instance of the specified register.
         """
         try:
-            return self.registers[name]
+            if not isinstance(path, str):
+                register = self.registers[path[0]]
+                if len(path) > 1:
+                    return register[path[1:]]
+                else:
+                    return register
+            else:
+                return self.registers[path]
         except LookupError as e:
             raise KeyError(
-                f"Peripheral {self} does not contain a register named '{name}'"
+                f"Peripheral {self} does not contain a register named '{path}'"
             ) from e
 
     def __setitem__(self, name: str, value: int) -> None:
@@ -515,18 +522,25 @@ class RegisterStruct(_RegisterBase, Mapping):
         for register in self.values():
             yield from register.register_iter(flat=flat, leaf_only=leaf_only)
 
-    def __getitem__(self, name: str) -> RegisterType:
+    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterType:
         """
         :param name: Register name.
 
         :return: Register with the given name.
         """
         try:
-            return self._registers[name]
+            if not isinstance(path, str):
+                register = self._registers[path[0]]
+                if len(path) > 1:
+                    return register[path[1:]]
+                else:
+                    return register
+            else:
+                return self._registers[path]
         except LookupError as e:
             raise KeyError(
                 f"{self.__class__} {self._path_with_peripheral} "
-                f"does not contain a register named '{name}'"
+                f"does not contain a register named '{path}'"
             ) from e
 
     def __setitem__(self, name: str, content: int) -> None:
@@ -653,18 +667,24 @@ class Register(_RegisterBase, Mapping):
         if not flat or self._array_index is None:
             yield self
 
-    def __getitem__(self, name: str) -> Field:
+    def __getitem__(self, path: Union[str, Sequence[str]]) -> Field:
         """
         :param name: Field name.
 
         :return: The instance of the specified field.
         """
         try:
-            return self._fields[name]
+            if not isinstance(path, str):
+                if len(path) != 1:
+                    raise KeyError("WTF") # FIXME
+                return self._fields[path[0]]
+            else:
+                return self._fields[path]
+
         except LookupError as e:
             raise KeyError(
                 f"{self.__class__} {self._path_with_peripheral} "
-                f"does not define a field with name '{name}'"
+                f"does not define a field with name '{path}'"
             ) from e
 
     def __setitem__(self, key: str, value: Union[str, int]) -> None:
@@ -730,16 +750,23 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         """Dimensions of the register array."""
         return self._description.dim_props
 
-    def __getitem__(self, index: int) -> RegisterType:
+    def __getitem__(self, path: Union[int, Sequence[str, int]]) -> RegisterType:
         """
         :param index: Index of the register in the register array.
 
         :return: The instance of the specified register.
         """
         try:
-            return self._array[index]
+            if not isinstance(path, int):
+                register = self._array[path[0]]
+                if len(path) > 1:
+                    return register[path[1:]]
+                else:
+                    return register
+            else:
+                return self._array[path]
         except IndexError as e:
-            raise IndexError(f"{self!s}: array index {index} is out of range") from e
+            raise IndexError(f"{self!s}: array index {path} is out of range") from e
 
     def __iter__(self) -> Iterator[RegisterType]:
         """
