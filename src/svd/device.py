@@ -50,6 +50,57 @@ from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
 
+def _svd_element_repr(
+    klass: type,
+    name: str,
+    /,
+    *,
+    address: Optional[int] = None,
+    length: Optional[int] = None,
+    content: Optional[int] = None,
+    content_max_width: int = 32,
+    bool_props: Iterable[Any] = (),
+    kv_props: Mapping[Any, Any] = MappingProxyType({}),
+) -> str:
+    """
+    Common pretty print function for SVD elements.
+
+    :param klass: Class of the element.
+    :param name: Name of the element.
+    :param address: Address of the element.
+    :param content: Length of the element.
+    :param width: Available width of the element, used to zero-pad the value.
+    :param value: Value of the element.
+    :param kwargs: Additional keyword arguments to include in the pretty print.
+
+    :return: Pretty printed string.
+    """
+
+    address_str: str = f" @ 0x{address:08x}" if address is not None else ""
+    length_str: str = f"<{length}>" if length is not None else ""
+
+    if content is not None:
+        leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
+        value_str: str = f" = 0x{leading_zeros}{content:x}"
+    else:
+        value_str: str = ""
+
+    if bool_props or kv_props:
+        bool_props_str: str = (
+            f"{', '.join(f'{v!s}' for v in bool_props)}" if bool_props else ""
+        )
+        kv_props_str: str = (
+            f"{', '.join(f'{k}: {v!s}' for k, v in kv_props.items())})"
+            if kv_props
+            else ""
+        )
+        props_str = f" ({bool_props_str}{', ' if kv_props else ''}{kv_props_str})"
+    else:
+        props_str = ""
+
+    return f"[{klass.__name__} {name}{length_str}{address_str}{value_str}{props_str}]"
+
+
 class Device(Mapping):
     """
     Representation of a SVD device.
@@ -148,11 +199,7 @@ class Device(Mapping):
         return len(self._peripherals)
 
     def __repr__(self) -> str:
-        return f"[{self.__class__.__name__} {self._qualified_name}]"
-        #return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
-
-    #def __str__(self) -> str:
-    #    return f"<{self.__class__.__name__} {self._qualified_name}>"
+        return _svd_element_repr(self.__class__, self._qualified_name, length=len(self))
 
 
 class Peripheral(Mapping):
@@ -315,16 +362,7 @@ class Peripheral(Mapping):
         return len(self.registers)
 
     def __repr__(self) -> str:
-        modified_memory_values = {
-            f"0x{reg.offset:04x}": reg.content
-            for reg in self.register_iter(leaf_only=True)
-            if reg.modified
-        }
-
-        return f"{str(self)}:\n{pformat(modified_memory_values, indent=2)}"
-
-    def __str__(self) -> str:
-        return f"{self.__class__.__name__} {self.name.upper()}@{hex(self.base_address)}"
+        return _svd_element_repr(self.__class__, self.name, address=self.base_address)
 
 
 class _RegisterDescription(NamedTuple):
@@ -419,10 +457,7 @@ class _RegisterBase:
         return self._description.element.modified_write_values
 
     def __repr__(self) -> str:
-        return str(self)
-
-    def __str__(self) -> str:
-        return f"{self.__class__.__name__} {self.path}@{hex(self.offset)}"
+        return _svd_element_repr(self.__class__, self.path, address=self.offset)
 
     @property
     def _path_with_peripheral(self) -> str:
@@ -515,12 +550,6 @@ class RegisterStruct(_RegisterBase, Mapping):
         :return: Number of registers in the register structure
         """
         return len(self._registers)
-
-    def __repr__(self) -> str:
-        return f"{str(self)} {pformat(list(self.values()), indent=2, depth=2)}"
-
-    def __str__(self) -> str:
-        return super().__str__()
 
 
 class Register(_RegisterBase, Mapping):
@@ -659,19 +688,15 @@ class Register(_RegisterBase, Mapping):
         return len(self._fields)
 
     def __repr__(self) -> str:
-        attr_str = pformat(
-            {
-                "Modified": self.modified,
-                "Value": f"0x{self.content:08x}",
-                "Fields": {k: str(v) for k, v in self.items()},
-            },
-            indent=2,
+        bool_props = ("modified",) if self.modified else ()
+
+        return _svd_element_repr(
+            self.__class__,
+            self.path,
+            address=self.offset,
+            content=self.content,
+            bool_props=bool_props,
         )
-
-        return f"{super().__repr__()}:\n{textwrap.indent(attr_str, '  ')}"
-
-    def __str__(self) -> str:
-        return f"{super().__str__()} {'(modified) ' if self.modified else ''}= 0x{self.content:08x}"
 
 
 class _DimensionedRegister(_RegisterBase, Sequence):
@@ -729,11 +754,13 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         return len(self._array)
 
     def __repr__(self) -> str:
-        return (f"{self.__class__.__name__} "
-                f"{self._path_with_peripheral}<{len(self)}> @ 0x{self.offset:08x}")
+        return _svd_element_repr(
+            self.__class__,
+            self.path,
+            address=self.offset,
+            length=len(self),
+        )
 
-    def __str__(self) -> str:
-        return f"{self.__class__.__name__} {self.path}<{len(self)}> @ 0x{self.offset:08x}"
 
 class RegisterStructArray(_DimensionedRegister):
     """
@@ -1055,20 +1082,14 @@ class Field:
         return content
 
     def __repr__(self):
-        attrs = {
-            "Allowed": self.allowed_values,
-            "Modified": self.modified,
-            "Bit offset": self.bit_offset,
-            "Bit width": self.bit_width,
-            "Enums": self.enums,
-        }
+        bool_props = ("modified",) if self.modified else ()
 
-        return f"{self.__class__.__name__} {self.name}: {pformat(attrs)}"
-
-    def __str__(self):
-        return (
-            f"{self.__class__} {self.name} "
-            f"{'(modified) ' if self.modified else ''}= {hex(self.content)}"
+        return _svd_element_repr(
+            self.__class__,
+            self.path,
+            content=self.content,
+            content_max_width=self.bit_width,
+            bool_props=bool_props,
         )
 
 
