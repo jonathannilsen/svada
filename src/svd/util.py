@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import enum
 import inspect
-from dataclasses import dataclass
+from abc import ABC
 from typing import (
     Any,
     Callable,
+    Collection,
     Dict,
     Iterable,
     Iterator,
+    Generic,
     List,
     Mapping,
     Optional,
     Sequence,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -27,27 +30,20 @@ from typing import (
 from lxml import objectify
 
 
-def strip_prefixes_suffixes(word: str, prefixes: List[str], suffixes: List[str]) -> str:
+def strip_suffix(word: str, suffix: str) -> str:
     """
-    Emulates the functionality provided by chaining `removeprefix` and `removesuffix`
-    to a str object.
+    Remove the given suffix from the word, if present.
 
     :param word: String to strip prefixes and suffixes from.
-    :param prefixes: List of prefixes to strip.
-    :param suffixes: List of suffixes to strip.
+    :param suffix: Suffix to strip.
 
-    :return: String where prefixes and suffixes have been sequentially removed.
+    :return: word without the suffix.
     """
 
-    for prefix in prefixes:
-        if word.startswith(prefix):
-            word = word[len(prefix) :]
+    if word.endswith(suffix):
+        word = word[: -len(suffix)]
 
-    for suffix in suffixes:
-        if word.endswith(suffix):
-            word = word[: -len(suffix)]
-
-    return word.strip("_")
+    return word
 
 
 def to_int(number: str) -> int:
@@ -121,20 +117,45 @@ class _Missing:
 MISSING = _Missing
 
 
-@dataclass
-class ElemProperty:
-    """
-    Represents an XML element property.
-    This class is intended to be used as a property getter.
-    """
+class elem:
+    """Data descriptor class used to access a XML element."""
 
-    name: str
-    klass: type
-    default: Union[Any, MISSING]
-    default_factory: Union[Callable[[], Any], MISSING]
+    def __init__(
+        self,
+        name: str,
+        klass: type,
+        /,
+        *,
+        default: Union[Any, MISSING] = MISSING,
+        default_factory: Union[Callable[[], Any], MISSING] = MISSING,
+    ) -> None:
+        """
+        Create a data descriptor object that extracts an element from an XML node.
+        Only one of default or default_factory can be set.
 
-    def __call__(self, node: objectify.ObjectifiedElement):
-        """Get the element property value from the given node."""
+        :param name: Name of the element.
+        :param klass: Class to use for the extracted element.
+        :param default: Default value to return if the element is not found.
+        :param default_factory: Callable that returns the default value to return if the element is
+                                not found.
+        """
+        if default != MISSING and default_factory != MISSING:
+            raise ValueError("Cannot set both default and default_factory")
+
+        self.name: str = name
+        self.klass: type = klass
+        self.default: Union[Any, MISSING] = default
+        self.default_factory: Union[Callable[[], Any], MISSING] = default_factory
+
+    def __get__(self, node: Optional[objectify.ObjectifiedElement], owner: Any = None):
+        """Get the element value from the given node."""
+
+        # If the node argument is None, we are being accessed through the class object.
+        # In that case, return the descriptor itself.
+        if node is None:
+            # Return self when accessed through the class, e.g., NodeClass.my_elem
+            return self
+        # else: the elem is being accessed through an instance, e.g. node_obj.my_elem
         try:
             svd_obj = node.__getattr__(self.name)
         except AttributeError:
@@ -150,53 +171,47 @@ class ElemProperty:
             return svd_obj
 
 
-def elem(
-    name: str,
-    klass: type,
-    /,
-    *,
-    default: Union[Any, MISSING] = MISSING,
-    default_factory: Union[Callable[[], Any], MISSING] = MISSING,
-):
-    """
-    Create a property that extracts an element from an XML node.
-    Only one of default or default_factory can be set.
+class attr:
+    """Data descriptor used to access a XML attribute."""
 
-    :param name: Name of the element.
-    :param klass: Class to use for the extracted element.
-    :param default: Default value to return if the element is not found.
-    :param default_factory: Callable that returns the default value to return if the element is
-                            not found.
-    :return: Property that extracts the element from an XML node.
-    """
-    if default != MISSING and default_factory != MISSING:
-        raise ValueError("Cannot set both default and default_factory")
-
-    return property(
-        fget=ElemProperty(
-            name=name,
-            klass=klass,
-            default=default,
-            default_factory=default_factory,
-        )
-    )
-
-
-@dataclass
-class AttrProperty:
-    """Represents an XML attribute property."""
-
-    name: str
-    converter: Optional[Callable[[str], Any]]
-    default: Union[Any, MISSING]
-    default_factory: Union[Callable[[], Any], MISSING]
-
-    def __call__(self, node: objectify.ObjectifiedElement):
+    def __init__(
+        self,
+        name: str,
+        /,
+        *,
+        converter: Optional[Callable[[str], Any]] = None,
+        default: Union[Any, MISSING] = MISSING,
+        default_factory: Union[Callable[[], Any], MISSING] = MISSING,
+    ) -> None:
         """
-        Get the attribute property value from the given node.
-        This method is intended to be used as a property getter.
+        Create a data descriptor object that extracts an attribute from an XML node.
+        Only one of default or default_factory can be set.
+
+        :param name: Name of the attribute.
+        :param converter: Optional callable that converts the attribute value from a string to another
+                        type.
+        :param default: Default value to return if the element is not found.
+        :param default_factory: Callable that returns the default value to return if the element is
+                                not found.
         """
+        if default != MISSING and default_factory != MISSING:
+            raise ValueError("Cannot set both default and default_factory")
+
+        self.name: str = name
+        self.converter: Optional[Callable[[str], Any]] = converter
+        self.default: Union[Any, MISSING] = default
+        self.default_factory: Union[Callable[[], Any], MISSING] = default_factory
+
+    def __get__(self, node: Optional[objectify.ObjectifiedElement], _owner: Any = None):
+        """Get the attribute value from the given node."""
+
+        # If the node argument is None, we are being accessed through the class object.
+        # In that case, return the descriptor itself.
+        if node is None:
+            return self
+
         value = node.get(self.name)
+
         if value is None:
             if self.default_factory != MISSING:
                 return self.default_factory()
@@ -213,43 +228,12 @@ class AttrProperty:
             raise ValueError(f"Error converting attribute {self.name}") from e
 
 
-def attr(
-    name: str,
-    /,
-    *,
-    converter: Optional[Callable[[str], Any]] = None,
-    default: Union[Any, MISSING] = MISSING,
-    default_factory: Union[Callable[[], Any], MISSING] = MISSING,
-):
-    """
-    Create a property that extracts an attribute from an XML node.
-    Only one of default or default_factory can be set.
-
-    :param name: Name of the attribute.
-    :param converter: Optional callable that converts the attribute value from a string to another
-                      type.
-    :param default: Default value to return if the element is not found.
-    :param default_factory: Callable that returns the default value to return if the element is
-                            not found.
-    :return: Property that extracts the attribute from an XML node.
-    """
-    if default != MISSING and default_factory != MISSING:
-        raise ValueError("Cannot set both default and default_factory")
-
-    return property(
-        fget=AttrProperty(
-            name=name,
-            converter=converter,
-            default=default,
-            default_factory=default_factory,
-        )
-    )
-
-
 C = TypeVar("C")
 
 
 class BindingRegistry:
+    """Simple container for XML binding classes."""
+
     def __init__(self) -> None:
         self._element_classes: List[Type[objectify.ObjectifiedElement]] = []
 
@@ -261,29 +245,23 @@ class BindingRegistry:
         """
         Add a class to the binding registry.
 
-        This is intended to be used as a decorator
+        This is intended to be used as a class decorator.
         """
 
-        xml_props: Dict[str, property] = getattr(klass, "_xml_props", {})
+        elem_props: Dict[str, elem] = getattr(klass, "_xml_elem_props", {})
+        attr_props: Dict[str, attr] = getattr(klass, "_xml_attr_props", {})
 
         for name, prop in inspect.getmembers(klass):
-            if not isinstance(prop, property):
-                continue
+            if isinstance(prop, elem):
+                if prop.klass == SELF_CLASS:
+                    prop.klass = klass
+                elem_props[name] = prop
 
-            prop_info = prop.fget
+            elif isinstance(prop, attr):
+                attr_props[name] = prop
 
-            if not (
-                isinstance(prop_info, ElemProperty)
-                or isinstance(prop_info, AttrProperty)
-            ):
-                continue
-
-            if isinstance(prop_info, ElemProperty) and prop_info.klass == SELF_CLASS:
-                prop_info.klass = klass
-
-            xml_props[name] = prop
-
-        setattr(klass, "_xml_props", xml_props)
+        setattr(klass, "_xml_elem_props", elem_props)
+        setattr(klass, "_xml_attr_props", attr_props)
 
         self._element_classes.append(klass)
 
@@ -295,10 +273,12 @@ class BindingRegistry:
         return self._element_classes
 
 
-def get_binding_props(klass: type) -> Dict[str, property]:
-    """Get the XML properties of a binding class."""
+def get_binding_elem_props(
+    klass: type,
+) -> Mapping[str, Union[attr, elem]]:
+    """Get the XML element properties of a binding class."""
     try:
-        return klass._xml_props
+        return klass._xml_elem_props
     except AttributeError as e:
         raise ValueError(f"Class {klass} is not a binding") from e
 
@@ -332,39 +312,103 @@ def iter_element_children(
     return element.iterchildren(*tags)
 
 
+K = TypeVar("K")
 T = TypeVar("T")
 
 
-class LazyStaticMapping(Mapping[str, T]):
+class LSMCollection(ABC, Generic[K, T]):
+    """
+    Generic collection data structure used to implement the collection operations
+    we suppport in the SVD device structure.
+    """
+
+    def __init__(
+        self,
+        *,
+        key_type: Type[K],
+        storage: Collection[T],
+        factory: Callable[[K], T],
+        **kwargs,
+    ):
+        self._key_type: Type[K] = key_type
+        self._storage: Dict[str, Optional[T]] = storage
+        self._factory = factory
+
+        super().__init__(**kwargs)
+
+    def __getitem__(self, key: Union[K, Sequence[Any]]) -> Union[T, Any]:
+        """
+        Get an item from the collection.
+
+        If the item is requested for the first time, it is first constructed using
+        the factory function.
+
+        The key parameter may either be a single key or a sequence of keys.
+        In the single key case, e.g.
+            my_collection["key"],
+        the item with key "key" is looked up in this instance.
+        A sequence of keys can be used to get elements deeper in the hierarchy.
+        If given e.g.
+            my_collection["key1", "key2", "key3"],
+        the element at
+            my_collection["key1"]["key2"]["key3"]
+        is returned.
+
+        :param key: Singular key or sequence of keys identifying the item.
+        :return:
+        """
+        this_key, remaining_keys = self.decode_key(key)
+
+        value = self._storage[this_key]
+        if value is None:
+            value = self._factory(this_key)
+            self._storage[this_key] = value
+
+        if remaining_keys:
+            return value[remaining_keys]
+        else:
+            return value
+
+    def __contains__(self, key: K) -> bool:
+        return key in self._storage
+
+    def __len__(self) -> int:
+        return len(self._storage)
+
+    def recursive_iter():
+        ...
+
+    def decode_key(self, key: Union[K, Sequence[Any]]) -> Tuple[K, Sequence[Any]]:
+        """Decode a key into a tuple of (initial key, remaining keys)."""
+        if isinstance(key, self._key_type):
+            return key, ()
+        elif isinstance(key, Sequence):
+            return key[0], key[1:]
+        else:
+            raise ValueError(f"Invalid key: {key}")
+
+
+class LazyStaticMapping(LSMCollection[str, T], Mapping[str, T]):
     """
     A mapping that lazily constructs its values.
     The set of keys is fixed at construction time.
     """
 
     def __init__(self, keys: Iterable[str], factory: Callable[[str], T], **kwargs):
-        self._factory = factory
-        self._storage: Dict[str, Optional[T]] = {key: None for key in keys}
-
-    def __getitem__(self, key: str) -> T:
-        if (value := self._storage[key]) is not None:
-            return value
-
-        new_value = self._factory(key)
-        self._storage[key] = new_value
-
-        return new_value
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._storage
+        """
+        :param keys: Keys contained in the mapping.
+        :param factory: Factory function which is called to initialize
+                        new elements.
+        """
+        super().__init__(
+            key_type=str, storage={key: None for key in keys}, factory=factory, **kwargs
+        )
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._storage)
 
-    def __len__(self) -> int:
-        return len(self._storage)
 
-
-class LazyStaticList(Sequence[T]):
+class LazyStaticList(LSMCollection[int, T], Sequence[T]):
     """
     A list that lazily constructs its values.
     The length of the list is fixed at construction time.
@@ -376,20 +420,12 @@ class LazyStaticList(Sequence[T]):
         :param factory: Factory function which is called to initialize
                         new elements.
         """
-        self._factory: Callable[[int], T] = factory
-        self._storage: List[Optional[T]] = [None for _ in range(length)]
-
-    def __getitem__(self, index: int) -> T:
-        if (value := self._storage[index]) is not None:
-            return value
-
-        new_value = self._factory(index)
-        self._storage[index] = new_value
-
-        return new_value
-
-    def __len__(self) -> int:
-        return len(self._storage)
+        super().__init__(
+            key_type=int,
+            storage=[None for _ in range(length)],
+            factory=factory,
+            **kwargs,
+        )
 
 
 def iter_merged(a: Iterable[T], b: Iterable[T], key: Callable[[T], Any]) -> Iterator[T]:

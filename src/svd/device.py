@@ -5,16 +5,14 @@
 #
 
 """
-Python representation of a SVD device.
+High level representation of a SVD device.
+
 """
 
 from __future__ import annotations
 
 import math
-import re
-import textwrap
 from collections import ChainMap, defaultdict
-from collections.abc import Mapping
 from functools import cached_property
 from itertools import chain
 from types import MappingProxyType
@@ -28,11 +26,13 @@ from typing import (
     Dict,
     Iterable,
     Iterator,
+    Mapping,
     NamedTuple,
     Optional,
     Sequence,
+    Type,
+    TypeVar,
 )
-from pprint import pformat
 
 from . import bindings
 from .bindings import (
@@ -50,58 +50,7 @@ from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
 
-def _svd_element_repr(
-    klass: type,
-    name: str,
-    /,
-    *,
-    address: Optional[int] = None,
-    length: Optional[int] = None,
-    content: Optional[int] = None,
-    content_max_width: int = 32,
-    bool_props: Iterable[Any] = (),
-    kv_props: Mapping[Any, Any] = MappingProxyType({}),
-) -> str:
-    """
-    Common pretty print function for SVD elements.
-
-    :param klass: Class of the element.
-    :param name: Name of the element.
-    :param address: Address of the element.
-    :param content: Length of the element.
-    :param width: Available width of the element, used to zero-pad the value.
-    :param value: Value of the element.
-    :param kwargs: Additional keyword arguments to include in the pretty print.
-
-    :return: Pretty printed string.
-    """
-
-    address_str: str = f" @ 0x{address:08x}" if address is not None else ""
-    length_str: str = f"<{length}>" if length is not None else ""
-
-    if content is not None:
-        leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
-        value_str: str = f" = 0x{leading_zeros}{content:x}"
-    else:
-        value_str: str = ""
-
-    if bool_props or kv_props:
-        bool_props_str: str = (
-            f"{', '.join(f'{v!s}' for v in bool_props)}" if bool_props else ""
-        )
-        kv_props_str: str = (
-            f"{', '.join(f'{k}: {v!s}' for k, v in kv_props.items())})"
-            if kv_props
-            else ""
-        )
-        props_str = f" ({bool_props_str}{', ' if kv_props else ''}{kv_props_str})"
-    else:
-        props_str = ""
-
-    return f"[{klass.__name__} {name}{length_str}{address_str}{value_str}{props_str}]"
-
-
-class Device(Mapping):
+class Device(Mapping[str, "Peripheral"]):
     """
     Representation of a SVD device.
     """
@@ -110,13 +59,13 @@ class Device(Mapping):
         self._device: bindings.DeviceElement = device
         self._reg_props: RegisterProperties = self._device.register_properties
 
-        peripherals = {}
+        peripherals_unsorted: Dict[str, Peripheral] = {}
 
         # Process peripherals in topological order to ensure that base peripherals are processed
         # before derived peripherals.
         for peripheral_element in _topo_sort_derived_peripherals(device.peripherals):
             if peripheral_element.is_derived:
-                base_peripheral = peripherals[peripheral_element.derived_from]
+                base_peripheral = peripherals_unsorted[peripheral_element.derived_from]
             else:
                 base_peripheral = None
 
@@ -127,10 +76,10 @@ class Device(Mapping):
                 base_peripheral=base_peripheral,
             )
 
-            peripherals[peripheral.name] = peripheral
+            peripherals_unsorted[peripheral.name] = peripheral
 
         self._peripherals: Dict[str, Peripheral] = dict(
-            sorted(peripherals.items(), key=lambda kv: kv[1].base_address)
+            sorted(peripherals_unsorted.items(), key=lambda kv: kv[1].base_address)
         )
 
     @property
@@ -202,7 +151,7 @@ class Device(Mapping):
         return _svd_element_repr(self.__class__, self._qualified_name, length=len(self))
 
 
-class Peripheral(Mapping):
+class Peripheral(Mapping[str, "RegisterType"]):
     """
     Representation of a specific device peripheral.
 
@@ -336,14 +285,7 @@ class Peripheral(Mapping):
         :return: The instance of the specified register.
         """
         try:
-            if not isinstance(path, str):
-                register = self.registers[path[0]]
-                if len(path) > 1:
-                    return register[path[1:]]
-                else:
-                    return register
-            else:
-                return self.registers[path]
+            return self.registers[path]
         except LookupError as e:
             raise KeyError(
                 f"Peripheral {self} does not contain a register named '{path}'"
@@ -479,7 +421,7 @@ class _RegisterBase:
         return self._path.parts[-1]
 
 
-class RegisterStruct(_RegisterBase, Mapping):
+class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Register"]]):
     """
     Register structure representing a group of registers.
     Represents either a SVD cluster element without dimensions,
@@ -529,14 +471,7 @@ class RegisterStruct(_RegisterBase, Mapping):
         :return: Register with the given name.
         """
         try:
-            if not isinstance(path, str):
-                register = self._registers[path[0]]
-                if len(path) > 1:
-                    return register[path[1:]]
-                else:
-                    return register
-            else:
-                return self._registers[path]
+            return self._registers[path]
         except LookupError as e:
             raise KeyError(
                 f"{self.__class__} {self._path_with_peripheral} "
@@ -566,7 +501,7 @@ class RegisterStruct(_RegisterBase, Mapping):
         return len(self._registers)
 
 
-class Register(_RegisterBase, Mapping):
+class Register(_RegisterBase, Mapping[str, "Field"]):
     """
     Physical register instance containing a value.
     Represents either a SVD register element without dimensions,
@@ -674,13 +609,7 @@ class Register(_RegisterBase, Mapping):
         :return: The instance of the specified field.
         """
         try:
-            if not isinstance(path, str):
-                if len(path) != 1:
-                    raise KeyError("WTF") # FIXME
-                return self._fields[path[0]]
-            else:
-                return self._fields[path]
-
+            return self._fields[path]
         except LookupError as e:
             raise KeyError(
                 f"{self.__class__} {self._path_with_peripheral} "
@@ -718,8 +647,10 @@ class Register(_RegisterBase, Mapping):
             bool_props=bool_props,
         )
 
+# Member type in a dimensioned register
+MT = TypeVar("MT")
 
-class _DimensionedRegister(_RegisterBase, Sequence):
+class _DimensionedRegister(_RegisterBase, Sequence[MT]):
     """
     Base class for register arrays.
     """
@@ -728,12 +659,12 @@ class _DimensionedRegister(_RegisterBase, Sequence):
 
     # Register type contained in the register array, to be set by child classes
     # This annotation is just here to satisfy the type checker
-    member_type: type
+    member_type: Type[MT]
 
     def __init__(self, description: _RegisterDescription, **kwargs):
         self._array_offsets: Sequence[int] = description.dim_props.to_range()
 
-        self._array: Sequence[RegisterType] = LazyStaticList(
+        self._array: Sequence[MT] = LazyStaticList(
             length=len(self._array_offsets),
             factory=lambda i: self.member_type(
                 description=self._description,
@@ -750,25 +681,18 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         """Dimensions of the register array."""
         return self._description.dim_props
 
-    def __getitem__(self, path: Union[int, Sequence[str, int]]) -> RegisterType:
+    def __getitem__(self, path: Union[int, Sequence[str, int]]) -> MT:
         """
         :param index: Index of the register in the register array.
 
         :return: The instance of the specified register.
         """
         try:
-            if not isinstance(path, int):
-                register = self._array[path[0]]
-                if len(path) > 1:
-                    return register[path[1:]]
-                else:
-                    return register
-            else:
-                return self._array[path]
+            return self._array[path]
         except IndexError as e:
             raise IndexError(f"{self!s}: array index {path} is out of range") from e
 
-    def __iter__(self) -> Iterator[RegisterType]:
+    def __iter__(self) -> Iterator[MT]:
         """
         :return: Iterator over the registers in the register array.
         """
@@ -781,6 +705,7 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         return len(self._array)
 
     def __repr__(self) -> str:
+        """Short description of the register."""
         return _svd_element_repr(
             self.__class__,
             self.path,
@@ -789,19 +714,19 @@ class _DimensionedRegister(_RegisterBase, Sequence):
         )
 
 
-class RegisterStructArray(_DimensionedRegister):
+class RegisterStructArray(_DimensionedRegister[RegisterStruct]):
     """
     Array of RegisterStruct objects.
     SVD cluster elements with dimensions are represented using this class.
     """
 
     @property
-    def member_type(self) -> type:
+    def member_type(self) -> Type:
         return RegisterStruct
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
+    ) -> Iterator[RegisterStruct]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
@@ -816,19 +741,19 @@ class RegisterStructArray(_DimensionedRegister):
                 yield from child.register_iter(flat=flat, leaf_only=leaf_only)
 
 
-class RegisterArray(_DimensionedRegister):
+class RegisterArray(_DimensionedRegister[Register]):
     """
     Array of Register objects.
     SVD register elements with dimensions are represented using this class.
     """
 
     @property
-    def member_type(self) -> type:
+    def member_type(self) -> Type:
         return Register
 
     def register_iter(
         self, flat: bool, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
+    ) -> Iterator[Register]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
@@ -1230,10 +1155,15 @@ def _expand_dimensioned_content(
     if dimensions.length <= 1:
         return content
 
-    expanded_content: List[Tuple[int, int]] = list(content)
-
-    for offset in dimensions.to_range()[1:]:
-        expanded_content.extend(((addr + offset, value) for addr, value in content))
+    if len(content) == 1:
+        # Handling this case separately provides a substantial speed increase for large repetitive
+        # register arrays.
+        addr, value = content[0]
+        expanded_content = [(addr + offset, value) for offset in dimensions.to_range()]
+    else:
+        expanded_content: List[Tuple[int, int]] = list(content)
+        for offset in dimensions.to_range()[1:]:
+            expanded_content.extend(((addr + offset, value) for addr, value in content))
 
     return expanded_content
 
@@ -1259,7 +1189,7 @@ def _extract_register_descriptions_helper(
 
     for element in elements:
         # Remove suffixes used for elements with dimensions
-        name = util.strip_prefixes_suffixes(element.name, [], ["[%s]"])
+        name = util.strip_suffix(element.name, "[%s]")
         reg_props = element.get_register_properties(base_props=base_reg_props)
         dim_props = element.dimensions
         address_offset = element.offset
@@ -1346,3 +1276,56 @@ def _extract_field_descriptions(
         return None
 
     return fields
+
+
+def _svd_element_repr(
+    klass: type,
+    name: str,
+    /,
+    *,
+    address: Optional[int] = None,
+    length: Optional[int] = None,
+    content: Optional[int] = None,
+    content_max_width: int = 32,
+    bool_props: Iterable[Any] = (),
+    kv_props: Mapping[Any, Any] = MappingProxyType({}),
+) -> str:
+    """
+    Common pretty print function for SVD elements.
+
+    :param klass: Class of the element.
+    :param name: Name of the element.
+    :param address: Address of the element.
+    :param content: Length of the element.
+    :param width: Available width of the element, used to zero-pad the value.
+    :param value: Value of the element.
+    :param kwargs: Additional keyword arguments to include in the pretty print.
+
+    :return: Pretty printed string.
+    """
+
+    address_str: str = f" @ 0x{address:08x}" if address is not None else ""
+    length_str: str = f"<{length}>" if length is not None else ""
+
+    if content is not None:
+        leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
+        value_str: str = f" = 0x{leading_zeros}{content:x}"
+    else:
+        value_str: str = ""
+
+    if bool_props or kv_props:
+        bool_props_str: str = (
+            f"{', '.join(f'{v!s}' for v in bool_props)}" if bool_props else ""
+        )
+        kv_props_str: str = (
+            f"{', '.join(f'{k}: {v!s}' for k, v in kv_props.items())})"
+            if kv_props
+            else ""
+        )
+        props_str = f" ({bool_props_str}{', ' if kv_props else ''}{kv_props_str})"
+    else:
+        props_str = ""
+
+    return (
+        f"[{name}{length_str}{address_str}{value_str}{props_str} {{{klass.__name__}}}]"
+    )

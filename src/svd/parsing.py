@@ -82,15 +82,9 @@ class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
         for element_class in element_classes:
             tag = element_class.TAG
             tag_classes[tag].add(element_class)
-            for prop in util.get_binding_props(element_class).values():
-                prop_info = prop.fget
-                try:
-                    name = prop_info.name
-                    klass = prop_info.klass
-                except AttributeError:
-                    continue
-                tag_classes[name].add(klass)
-                two_tag_classes[(tag, name)].add(klass)
+            for prop in util.get_binding_elem_props(element_class).values():
+                tag_classes[prop.name].add(prop.klass)
+                two_tag_classes[(tag, prop.name)].add(prop.klass)
 
         one_tag: Set[str] = set()
         namespace = self.get_namespace(None)  # note: None is the empty namespace
