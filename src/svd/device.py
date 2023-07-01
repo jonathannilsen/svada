@@ -34,6 +34,9 @@ from typing import (
     TypeVar,
 )
 
+import numpy as np
+import numpy.ma as ma
+
 from . import bindings
 from .bindings import (
     Access,
@@ -48,6 +51,10 @@ from .bindings import (
 from .path import SPath
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
+
+from time import perf_counter_ns
+
+LOG_TIME = False
 
 
 class Device(Mapping[str, "Peripheral"]):
@@ -219,7 +226,6 @@ class Peripheral(Mapping[str, "Register"]):
     #        ),
     #    )
 
-
     # TODO: can move the main iteration functionality to a helper function,
     # then make this function call that with the descriptions in this peripheral
     # (you know what I mean)
@@ -236,17 +242,16 @@ class Peripheral(Mapping[str, "Register"]):
         :return: Iterator over the registers in the peripheral.
         """
 
-        description = _RegisterDescription(
-            name="",
-            start_offset=0,
-            reg_props=None,
-            dim_props=None,
-            registers=None,
-            fields=None,
-            element=None,
-        )
-        register = Register(description=description, peripheral=self, path=None)
-
+        # description = _RegisterDescription(
+        #    name="",
+        #    start_offset=0,
+        #    reg_props=None,
+        #    dim_props=None,
+        #    registers=None,
+        #    fields=None,
+        #    element=None,
+        # )
+        # register = Register(description=description, peripheral=self, path=None)
         queue = deque(
             (SPath(name), 0, desc) for name, desc in self._register_descriptions.items()
         )
@@ -254,23 +259,31 @@ class Peripheral(Mapping[str, "Register"]):
         while queue:
             path, offset, description = queue.pop()
 
-            # Reuse the register object for efficiency
-            register._move(description, path, offset)
+            # Reuse the register object for efficiency (this seems to not be noticable at all...)
+            # register._move(description, path, offset)
+            register = Register(description, self, path, offset)
 
-            is_leaf = True
+            is_leaf = description.registers is None and (
+                flat or (description.dim_props is None or path.is_array_element())
+            )
 
             if not leaf_only or is_leaf:
                 yield register
 
-            if not flat and description.dim_props is not None and not path.is_array_element():
+            if (
+                not flat
+                and description.dim_props is not None
+                and not path.is_array_element()
+            ):
                 # Expand dimensioned register
                 for i, additional_offset in enumerate(description.dim_props.to_range()):
-                    queue.append((path.join(i), offset + additional_offset, description))
+                    queue.append(
+                        (path.join(i), offset + additional_offset, description)
+                    )
             elif description.registers is not None:
                 # Expand register structure
                 for name, child_description in description.registers.items():
                     queue.append((path.join(name), offset, child_description))
-
 
     # From Peripheral
 
@@ -359,11 +372,21 @@ class Peripheral(Mapping[str, "Register"]):
             # register properties propagates down to the register elements.
             else:
                 base_info = _extract_register_info(
-                    self._base_peripheral._peripheral.registers, self._reg_props
+                    self._base_peripheral.address_blocks,
+                    self._base_peripheral._peripheral.registers,
+                    self._reg_props,
                 )
 
+            address_blocks = self.address_blocks + self._base_peripheral.address_blocks
+
+        else:
+            address_blocks = self.address_blocks
+
         info = _extract_register_info(
-            self._peripheral.registers, self._reg_props, base_info=base_info
+            address_blocks,
+            self._peripheral.registers,
+            self._reg_props,
+            base_info=base_info,
         )
 
         return info
@@ -460,14 +483,14 @@ class Register:
 
         # TODO
         self._fields = {}
-        #if self._description.fields is not None:
+        # if self._description.fields is not None:
         #    self._fields = LazyStaticMapping(
         #        keys=self._description.fields.keys(),
         #        factory=lambda name: Field(
         #            description=self._description.fields[name], register=self
         #        ),
         #    )
-        #else:
+        # else:
         #    self._fields = {}
 
     @property
@@ -631,8 +654,9 @@ class Register:
             return None
         return self._path.parts[-1]
 
-    def _move(self, description: _RegisterDescription, path: SPath, instance_offset: int = 0) -> None:
-        # TODO: maybe put all these in a single structure
+    def _move(
+        self, description: _RegisterDescription, path: SPath, instance_offset: int = 0
+    ) -> None:
         self._description = description
         self._path = path
         self._instance_offset = instance_offset
@@ -1311,7 +1335,21 @@ class _ExtractedRegisterInfo(NamedTuple):
     reset_contents: Mapping[int, int]
 
 
+def numpy_full(length: int, value: int, dtype: np.dtype):
+    # Apparently this special case is not handled by numpy.full.
+    # Explicitly handling it here saves a lot of time.
+    if value == 0:
+        return np.zeros(length, dtype=dtype)
+    else:
+        return np.full(
+            length,
+            value,
+            dtype=dtype,
+        )
+
+
 def _extract_register_info(
+    address_blocks: List[AddressBlock],
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_info: Optional[_ExtractedRegisterInfo] = None,
@@ -1326,14 +1364,37 @@ def _extract_register_info(
 
     :return: Map of register descriptions, indexed by name.
     """
-    helper_result = _extract_register_descriptions_helper(elements, base_reg_props)
+    if len(address_blocks) != 1:
+        raise NotImplementedError(
+            "The implementation assumes exactly one peripheral address block"
+        )
+
+    t = perf_counter_ns()
+
+    if base_info is not None:
+        reset_content = np.copy(base_info.reset_contents)
+    else:
+        # TODO: take dtype from SVD?
+        reset_content = numpy_full(
+            address_blocks[0].size, base_reg_props.reset_value, dtype=np.uint8
+        )
+
+    if LOG_TIME:
+        print(f"1: {(perf_counter_ns() - t) / 1_000_000:.2f}")
+    t = perf_counter_ns()
+
+    helper_result = _extract_register_descriptions_helper(
+        reset_content, elements, base_reg_props
+    )
+
+    if LOG_TIME:
+        print(f"2: {(perf_counter_ns() - t) / 1_000_000:.2f}")
+    t = perf_counter_ns()
 
     descriptions = {}
-    reset_contents = {}
 
     for res in helper_result:
         descriptions[res.description.name] = res.description
-        reset_contents.update(res.reset_contents)
 
     if base_info is not None:
         # The register maps are each sorted internally, but need to be merged by address
@@ -1346,23 +1407,21 @@ def _extract_register_info(
             )
         )
 
-        reset_contents = dict(
-            util.iter_merged(
-                reset_contents.items(),
-                base_info.reset_contents.items(),
-                key=lambda kv: kv[0],
-            )
-        )
+    if LOG_TIME:
+        print(f"3: {(perf_counter_ns() - t) / 1_000_000:.2f}")
+    t = perf_counter_ns()
 
-    return _ExtractedRegisterInfo(descriptions, reset_contents)
+    return _ExtractedRegisterInfo(descriptions, reset_content)
 
 
 class _ExtractHelperResult(NamedTuple):
     """Container for intermediary results of the register extraction helper."""
 
     description: _RegisterDescription
-    min_address: int
-    reset_contents: Iterable[Tuple[int, int]]
+    # TODO: consider creating an abstraction over this once things are done
+    address_mask: np.ndarray
+    address_start: int
+    address_end: int
 
 
 def _expand_dimensioned_content(
@@ -1386,7 +1445,16 @@ def _expand_dimensioned_content(
     return expanded_content
 
 
+# TODO: use SVD endianness
+SIZE_TO_DTYPE = {
+    1: np.uint8,
+    2: np.dtype((np.dtype("<u2"), (np.uint8, 2))),
+    4: np.dtype((np.dtype("<u4"), (np.uint8, 4))),
+}
+
+
 def _extract_register_descriptions_helper(
+    content: np.ndarray,
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
@@ -1403,7 +1471,7 @@ def _extract_register_descriptions_helper(
              by name. The second element is the minimum address offset of any of the returned
              registers, used inside this function to sort registers while traversing.
     """
-    result: List[_ExtractHelperResult] = []
+    total_result: List[_ExtractHelperResult] = []
 
     for element in elements:
         # Remove suffixes used for elements with dimensions
@@ -1412,15 +1480,32 @@ def _extract_register_descriptions_helper(
         dim_props = element.dimensions
         address_offset = element.offset
 
+        # TODO: avoid filling if reset value is 0!
+
         if isinstance(element, bindings.RegisterElement):
             # Register addresses are defined relative to the enclosing element
             if address_offset is not None:
-                address = base_address + address_offset
+                address_start = base_address + address_offset
             else:
-                address = base_address
+                address_start = base_address
 
-            min_address = address
-            undimensioned_contents = [(address, reg_props.reset_value)]
+            size_bytes = reg_props.size // 8
+
+            if dim_props is not None and dim_props.length > 1:
+                if dim_props.step == size_bytes:
+                    address_mask = np.ones(size_bytes * dim_props.length, bool)
+                    address_end = address_start + size_bytes * dim_props.length
+                # else ?
+            else:
+                address_end = address_start + size_bytes
+                address_mask = np.ones(size_bytes, bool)
+
+            if reg_props.reset_value != 0:  # FIXME: compare to peripheral reset_value
+                reset_value_dtype = SIZE_TO_DTYPE[size_bytes]
+                content[address_start:address_end].view(reset_value_dtype)[
+                    :
+                ] = reg_props.reset_value
+
             registers = None
             fields = _extract_field_descriptions(element.fields)
 
@@ -1428,47 +1513,82 @@ def _extract_register_descriptions_helper(
             # By the SVD specification, cluster addresses are defined relative to the peripheral
             # base address, but some SVDs don't follow this rule.
             if address_offset is not None:
-                address = base_address + address_offset
+                address_start = base_address + address_offset
                 # address = address_offset
             else:
-                address = base_address
+                address_start = base_address
 
             child_results = _extract_register_descriptions_helper(
+                content=content,
                 elements=element.registers,
                 base_reg_props=reg_props,
-                base_address=address,
+                base_address=address_start,
             )
 
-            registers = {r.name: r for r, _, _ in child_results}
+            registers = {}
+            last_address_end = None
+            address_mask = np.asarray([], dtype=bool)
+
+            for result in child_results:
+                registers[result.description.name] = result.description
+
+                if last_address_end is not None:
+                    address_gap = result.address_start - last_address_end
+                    assert address_gap >= 0
+                else:
+                    address_gap = 0
+
+                last_address_end = result.address_end
+
+                address_mask = np.pad(address_mask, address_gap)
+                address_mask = np.concatenate([address_mask, result.address_mask])
+
+            address_end = last_address_end
             fields = None
 
-            if child_results:
-                min_address = min(address, child_results[0].min_address)
-            else:
-                min_address = address
+            # TODO: optimize for the contiguous fill case
+            if dim_props is not None and dim_props.length > 1:
+                # Duplicate content across the dimension
+                for element_offset in dim_props.to_range():
+                    np.copyto(
+                        dst=content[
+                            address_start
+                            + element_offset : address_end
+                            + element_offset
+                        ],
+                        src=content[address_start:address_end],
+                        where=address_mask,
+                    )
 
-            undimensioned_contents = list(
-                chain.from_iterable(r.reset_contents for r in child_results)
-            )
+                # Duplicate the address mask across the dimension
+                pad_bytes = address_end - address_start - len(address_mask)
+                if pad_bytes > 0:
+                    address_mask = np.pad(address_mask, pad_bytes)
+                address_mask = np.tile(address_mask, dim_props.length)
+                address_end = (
+                    address_end + dim_props.to_range()[-1]
+                )  # TODO: is this correct?
 
         description = _RegisterDescription(
             element=element,
             name=name,
-            start_offset=address,
+            start_offset=address_start,
             reg_props=reg_props,
             dim_props=dim_props,
             registers=registers,
             fields=fields,
         )
 
-        if dim_props is not None:
-            contents = _expand_dimensioned_content(undimensioned_contents, dim_props)
-        else:
-            contents = undimensioned_contents
+        total_result.append(
+            _ExtractHelperResult(
+                description=description,
+                address_mask=address_mask,
+                address_start=address_start,
+                address_end=address_end,
+            )
+        )
 
-        result.append(_ExtractHelperResult(description, min_address, contents))
-
-    sorted_result = sorted(result, key=lambda r: r.min_address)
+    sorted_result = sorted(total_result, key=lambda r: r.address_start)
 
     return sorted_result
 
