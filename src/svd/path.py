@@ -24,6 +24,8 @@ class SPath(Sequence[Union[str, int]]):
 
         split_parts: List[Union[str, int]] = []
 
+        # FIXME: ensure no two consecutive ints
+
         for part in parts:
             if isinstance(part, SPath):
                 split_parts.extend(part.parts)
@@ -64,6 +66,9 @@ class SPath(Sequence[Union[str, int]]):
         if len(self._parts) == 1:
             return self
         return SPath(*self._parts[:-1])
+
+    def is_array_element(self) -> bool:
+        return isinstance(self[-1], int)
 
     def join(self, *other: Union[SPath, str, int]) -> SPath:
         return SPath(*self.parts, *other)

@@ -6,13 +6,13 @@
 
 """
 High level representation of a SVD device.
-
 """
 
 from __future__ import annotations
 
+import enum
 import math
-from collections import ChainMap, defaultdict
+from collections import ChainMap, defaultdict, deque
 from functools import cached_property
 from itertools import chain
 from types import MappingProxyType
@@ -151,7 +151,7 @@ class Device(Mapping[str, "Peripheral"]):
         return _svd_element_repr(self.__class__, self._qualified_name, length=len(self))
 
 
-class Peripheral(Mapping[str, "RegisterType"]):
+class Peripheral(Mapping[str, "Register"]):
     """
     Representation of a specific device peripheral.
 
@@ -208,19 +208,24 @@ class Peripheral(Mapping[str, "RegisterType"]):
         """List of address blocks associated with the peripheral."""
         return list(self._peripheral.address_blocks)
 
-    @cached_property
-    def registers(self) -> Mapping[str, RegisterType]:
-        """Mapping of top-level registers in the peripheral, indexed by name."""
-        return LazyStaticMapping(
-            keys=self._register_descriptions.keys(),
-            factory=lambda name: _create_register_instance(
-                self._register_descriptions[name], path=SPath(name), peripheral=self
-            ),
-        )
+    # TODO
+    # @cached_property
+    # def registers(self) -> Mapping[str, RegisterType]:
+    #    """Mapping of top-level registers in the peripheral, indexed by name."""
+    #    return LazyStaticMapping(
+    #        keys=self._register_descriptions.keys(),
+    #        factory=lambda name: _create_register_instance(
+    #            self._register_descriptions[name], path=SPath(name), peripheral=self
+    #        ),
+    #    )
 
+
+    # TODO: can move the main iteration functionality to a helper function,
+    # then make this function call that with the descriptions in this peripheral
+    # (you know what I mean)
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
+    ) -> Iterator[Register]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -230,8 +235,93 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
         :return: Iterator over the registers in the peripheral.
         """
-        for register_name in self:
-            yield from self[register_name].register_iter(flat=flat, leaf_only=leaf_only)
+
+        description = _RegisterDescription(
+            name="",
+            start_offset=0,
+            reg_props=None,
+            dim_props=None,
+            registers=None,
+            fields=None,
+            element=None,
+        )
+        register = Register(description=description, peripheral=self, path=None)
+
+        queue = deque(
+            (SPath(name), 0, desc) for name, desc in self._register_descriptions.items()
+        )
+
+        while queue:
+            path, offset, description = queue.pop()
+
+            # Reuse the register object for efficiency
+            register._move(description, path, offset)
+
+            is_leaf = True
+
+            if not leaf_only or is_leaf:
+                yield register
+
+            if not flat and description.dim_props is not None and not path.is_array_element():
+                # Expand dimensioned register
+                for i, additional_offset in enumerate(description.dim_props.to_range()):
+                    queue.append((path.join(i), offset + additional_offset, description))
+            elif description.registers is not None:
+                # Expand register structure
+                for name, child_description in description.registers.items():
+                    queue.append((path.join(name), offset, child_description))
+
+
+    # From Peripheral
+
+    #        for register_name in self:
+    #            yield from self[register_name].register_iter(flat=flat, leaf_only=leaf_only)
+
+    # From Register
+
+    #    def register_iter(
+    #        self, flat: bool = False, leaf_only: bool = False
+    #    ) -> Iterator[RegisterType]:
+    #        """
+    #        Recursive iterator over the registers in the peripheral in pre-order.
+    #        See Peripheral.register_iter().
+    #        """
+    #        if not flat or self._array_index is None:
+    #            yield self
+
+    # From RegisterStructArray
+
+    #    def register_iter(
+    #        self, flat: bool = False, leaf_only: bool = False
+    #    ) -> Iterator[RegisterStruct]:
+    #        """
+    #        Recursive iterator over the registers in the peripheral in pre-order.
+    #        See Peripheral.register_iter().
+    #        """
+    #        if flat or not leaf_only:
+    #            yield self
+    #
+    #        if flat:
+    #            yield from self[0].register_iter(flat=flat, leaf_only=leaf_only)
+    #        else:
+    #            for child in self:
+    #                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
+
+    # From RegisterArray
+
+    #    def register_iter(
+    #        self, flat: bool, leaf_only: bool = False
+    #    ) -> Iterator[Register]:
+    #        """
+    #        Recursive iterator over the registers in the peripheral in pre-order.
+    #        See Peripheral.register_iter().
+    #        """
+    #        if flat or not leaf_only:
+    #            yield self
+    #
+    #        if not flat:
+    #            for child in self:
+    #                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
 
     @property
     def contents(self) -> Mapping[int, int]:
@@ -331,7 +421,14 @@ class _RegisterDescription(NamedTuple):
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
 
-class _RegisterBase:
+class RegisterTypeX(enum.Enum):
+    STRUCT_ARRAY = enum.auto()
+    REGISTER_ARRAY = enum.auto()
+    STRUCT = enum.auto()
+    REGISTER = enum.auto()
+
+
+class Register:
     """Base class for all register types"""
 
     __slots__ = [
@@ -339,6 +436,7 @@ class _RegisterBase:
         "_peripheral",
         "_path",
         "_instance_offset",
+        "_fields",
     ]
 
     def __init__(
@@ -359,6 +457,18 @@ class _RegisterBase:
         self._peripheral: Peripheral = peripheral
         self._path: SPath = path
         self._instance_offset: int = instance_offset
+
+        # TODO
+        self._fields = {}
+        #if self._description.fields is not None:
+        #    self._fields = LazyStaticMapping(
+        #        keys=self._description.fields.keys(),
+        #        factory=lambda name: Field(
+        #            description=self._description.fields[name], register=self
+        #        ),
+        #    )
+        #else:
+        #    self._fields = {}
 
     @property
     def name(self) -> str:
@@ -405,132 +515,15 @@ class _RegisterBase:
         """Side effect of writing the register"""
         return self._description.element.modified_write_values
 
-    def __repr__(self) -> str:
-        return _svd_element_repr(self.__class__, self.path, address=self.offset)
-
-    @property
-    def _path_with_peripheral(self) -> str:
-        """Full path of the register including the parent peripheral"""
-        return f"{self._peripheral.name}.{self.path}"
-
-    @property
-    def _array_index(self) -> Optional[int]:
-        """Index of the register in the parent array, if applicable."""
-        if not isinstance(self._path.parts[-1], int):
-            return None
-        return self._path.parts[-1]
-
-
-class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Register"]]):
-    """
-    Register structure representing a group of registers.
-    Represents either a SVD cluster element without dimensions,
-    or a specific index of a cluster array.
-    """
-
-    __slots__ = ["_registers"]
-
-    def __init__(self, **kwargs):
-        """
-        See parent class for a description of parameters.
-        """
-        super().__init__(**kwargs)
-
-        self._registers = LazyStaticMapping(
-            keys=self._description.registers.keys(),
-            factory=lambda name: _create_register_instance(
-                description=self._description.registers[name],
-                peripheral=self._peripheral,
-                instance_offset=self._instance_offset,
-                path=self.path.join(name),
-            ),
-        )
-
-    def register_iter(
-        self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
-        """
-        Recursive iterator over the registers in the peripheral in pre-order.
-        Registers are ordered by increasing offset/address.
-
-        :param flat: Do not yield individual registers in register arrays.
-        :param leaf_only: Only yield physical registers, i.e. those that have a value.
-
-        :return: Iterator over the registers in the peripheral.
-        """
-        if not leaf_only and not (flat and self._array_index is not None):
-            yield self
-
-        for register in self.values():
-            yield from register.register_iter(flat=flat, leaf_only=leaf_only)
-
-    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterType:
-        """
-        :param name: Register name.
-
-        :return: Register with the given name.
-        """
-        try:
-            return self._registers[path]
-        except LookupError as e:
-            raise KeyError(
-                f"{self.__class__} {self._path_with_peripheral} "
-                f"does not contain a register named '{path}'"
-            ) from e
-
-    def __setitem__(self, name: str, content: int) -> None:
-        """
-        :param name: Register name.
-        :param content: Register value.
-        """
-        try:
-            self[name].content = content
-        except AttributeError as e:
-            raise TypeError(f"{self[name]} does not have content") from e
-
-    def __iter__(self) -> Iterator[str]:
-        """
-        :return: Iterator over the names of registers in the register structure.
-        """
-        return iter(self._registers)
-
-    def __len__(self) -> int:
-        """
-        :return: Number of registers in the register structure
-        """
-        return len(self._registers)
-
-
-class Register(_RegisterBase, Mapping[str, "Field"]):
-    """
-    Physical register instance containing a value.
-    Represents either a SVD register element without dimensions,
-    or a specific index of a register array.
-    """
-
-    __slots__ = ["_fields"]
-
-    def __init__(self, **kwargs):
-        """
-        Initialize the class attribute(s).
-        See parent class for a description of parameters.
-        """
-        super().__init__(**kwargs)
-
-        if self._description.fields is not None:
-            self._fields = LazyStaticMapping(
-                keys=self._description.fields.keys(),
-                factory=lambda name: Field(
-                    description=self._description.fields[name], register=self
-                ),
-            )
-        else:
-            self._fields = {}
-
     @property
     def modified(self) -> bool:
         """True if the register contains a different value now than at reset."""
         return self.content != self.reset_content
+
+    @property
+    def dimensions(self) -> Dimensions:
+        """Dimensions of the register array."""
+        return self._description.dim_props
 
     @property
     def content(self) -> int:
@@ -594,7 +587,7 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
+    ) -> Iterator[Register]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
@@ -602,192 +595,417 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         if not flat or self._array_index is None:
             yield self
 
-    def __getitem__(self, path: Union[str, Sequence[str]]) -> Field:
-        """
-        :param name: Field name.
-
-        :return: The instance of the specified field.
-        """
-        try:
-            return self._fields[path]
-        except LookupError as e:
-            raise KeyError(
-                f"{self.__class__} {self._path_with_peripheral} "
-                f"does not define a field with name '{path}'"
-            ) from e
-
-    def __setitem__(self, key: str, value: Union[str, int]) -> None:
-        """
-        :param key: Either the bit offset of a field, or the field's name.
-        :param value: A raw numeric value, or a field enumeration, to write
-            to the selected register field.
-        """
-        self[key].content = value
-
-    def __iter__(self) -> Iterator[str]:
-        """
-        :return: Iterator over the field names in the register.
-        """
-        return iter(self._fields)
-
-    def __len__(self) -> int:
-        """
-        :return: Number of fields in the register.
-        """
-        return len(self._fields)
-
     def __repr__(self) -> str:
-        bool_props = ("modified",) if self.modified else ()
+        return _svd_element_repr(self.__class__, self.path, address=self.offset)
 
-        return _svd_element_repr(
-            self.__class__,
-            self.path,
-            address=self.offset,
-            content=self.content,
-            bool_props=bool_props,
-        )
+    #     def __repr__(self) -> str:
+    #         bool_props = ("modified",) if self.modified else ()
+    #
+    #         return _svd_element_repr(
+    #             self.__class__,
+    #             self.path,
+    #             address=self.offset,
+    #             content=self.content,
+    #             bool_props=bool_props,
+    #         )
 
-# Member type in a dimensioned register
-MT = TypeVar("MT")
-
-class _DimensionedRegister(_RegisterBase, Sequence[MT]):
-    """
-    Base class for register arrays.
-    """
-
-    __slots__ = ["_array_offsets", "_array"]
-
-    # Register type contained in the register array, to be set by child classes
-    # This annotation is just here to satisfy the type checker
-    member_type: Type[MT]
-
-    def __init__(self, description: _RegisterDescription, **kwargs):
-        self._array_offsets: Sequence[int] = description.dim_props.to_range()
-
-        self._array: Sequence[MT] = LazyStaticList(
-            length=len(self._array_offsets),
-            factory=lambda i: self.member_type(
-                description=self._description,
-                peripheral=self._peripheral,
-                instance_offset=self._instance_offset + self._array_offsets[i],
-                path=self.path.join(i),
-            ),
-        )
-
-        super().__init__(description=description, **kwargs)
+    #    def __repr__(self) -> str:
+    #        """Short description of the register."""
+    #        return _svd_element_repr(
+    #            self.__class__,
+    #            self.path,
+    #            address=self.offset,
+    #            length=len(self),
+    #        )
 
     @property
-    def dimensions(self) -> Dimensions:
-        """Dimensions of the register array."""
-        return self._description.dim_props
+    def _path_with_peripheral(self) -> str:
+        """Full path of the register including the parent peripheral"""
+        return f"{self._peripheral.name}.{self.path}"
 
-    def __getitem__(self, path: Union[int, Sequence[str, int]]) -> MT:
-        """
-        :param index: Index of the register in the register array.
-
-        :return: The instance of the specified register.
-        """
-        try:
-            return self._array[path]
-        except IndexError as e:
-            raise IndexError(f"{self!s}: array index {path} is out of range") from e
-
-    def __iter__(self) -> Iterator[MT]:
-        """
-        :return: Iterator over the registers in the register array.
-        """
-        return iter(self._array)
-
-    def __len__(self) -> int:
-        """
-        :return: Number of registers in the register array.
-        """
-        return len(self._array)
-
-    def __repr__(self) -> str:
-        """Short description of the register."""
-        return _svd_element_repr(
-            self.__class__,
-            self.path,
-            address=self.offset,
-            length=len(self),
-        )
-
-
-class RegisterStructArray(_DimensionedRegister[RegisterStruct]):
-    """
-    Array of RegisterStruct objects.
-    SVD cluster elements with dimensions are represented using this class.
-    """
-
+    # FIXME: move this to SPath
     @property
-    def member_type(self) -> Type:
-        return RegisterStruct
+    def _array_index(self) -> Optional[int]:
+        """Index of the register in the parent array, if applicable."""
+        if not isinstance(self._path.parts[-1], int):
+            return None
+        return self._path.parts[-1]
 
-    def register_iter(
-        self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterStruct]:
-        """
-        Recursive iterator over the registers in the peripheral in pre-order.
-        See Peripheral.register_iter().
-        """
-        if flat or not leaf_only:
-            yield self
-
-        if flat:
-            yield from self[0].register_iter(flat=flat, leaf_only=leaf_only)
-        else:
-            for child in self:
-                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
+    def _move(self, description: _RegisterDescription, path: SPath, instance_offset: int = 0) -> None:
+        # TODO: maybe put all these in a single structure
+        self._description = description
+        self._path = path
+        self._instance_offset = instance_offset
 
 
-class RegisterArray(_DimensionedRegister[Register]):
-    """
-    Array of Register objects.
-    SVD register elements with dimensions are represented using this class.
-    """
-
-    @property
-    def member_type(self) -> Type:
-        return Register
-
-    def register_iter(
-        self, flat: bool, leaf_only: bool = False
-    ) -> Iterator[Register]:
-        """
-        Recursive iterator over the registers in the peripheral in pre-order.
-        See Peripheral.register_iter().
-        """
-        if flat or not leaf_only:
-            yield self
-
-        if not flat:
-            for child in self:
-                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
-
-
-# Union of all register types
-RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArray]
-
-
-def _create_register_instance(
-    description: _RegisterDescription, is_element: bool = False, **kwargs
-) -> RegisterType:
-    """
-    Create a mutable register instance from a register description.
-
-    :param description: Register description
-    :param index: Index of the register in the parent register array, if applicable
-    :return: Register instance
-    """
-    if description.registers is not None:
-        if description.dim_props is not None and not is_element:
-            return RegisterStructArray(description=description, **kwargs)
-        return RegisterStruct(description=description, **kwargs)
-    else:
-        if description.dim_props is not None and not is_element:
-            return RegisterArray(description=description, **kwargs)
-        return Register(description=description, **kwargs)
+# class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Register"]]):
+#    """
+#    Register structure representing a group of registers.
+#    Represents either a SVD cluster element without dimensions,
+#    or a specific index of a cluster array.
+#    """
+#
+#    __slots__ = ["_registers"]
+#
+#    def __init__(self, **kwargs):
+#        """
+#        See parent class for a description of parameters.
+#        """
+#        super().__init__(**kwargs)
+#
+#        self._registers = LazyStaticMapping(
+#            keys=self._description.registers.keys(),
+#            factory=lambda name: _create_register_instance(
+#                description=self._description.registers[name],
+#                peripheral=self._peripheral,
+#                instance_offset=self._instance_offset,
+#                path=self.path.join(name),
+#            ),
+#        )
+#
+#    def register_iter(
+#        self, flat: bool = False, leaf_only: bool = False
+#    ) -> Iterator[Register]:
+#        """
+#        Recursive iterator over the registers in the peripheral in pre-order.
+#        Registers are ordered by increasing offset/address.
+#
+#        :param flat: Do not yield individual registers in register arrays.
+#        :param leaf_only: Only yield physical registers, i.e. those that have a value.
+#
+#        :return: Iterator over the registers in the peripheral.
+#        """
+#        if not leaf_only and not (flat and self._array_index is not None):
+#            yield self
+#
+#        for register in self.values():
+#            yield from register.register_iter(flat=flat, leaf_only=leaf_only)
+#
+#    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> Register:
+#        """
+#        :param name: Register name.
+#
+#        :return: Register with the given name.
+#        """
+#        try:
+#            return self._registers[path]
+#        except LookupError as e:
+#            raise KeyError(
+#                f"{self.__class__} {self._path_with_peripheral} "
+#                f"does not contain a register named '{path}'"
+#            ) from e
+#
+#    def __setitem__(self, name: str, content: int) -> None:
+#        """
+#        :param name: Register name.
+#        :param content: Register value.
+#        """
+#        try:
+#            self[name].content = content
+#        except AttributeError as e:
+#            raise TypeError(f"{self[name]} does not have content") from e
+#
+#    def __iter__(self) -> Iterator[str]:
+#        """
+#        :return: Iterator over the names of registers in the register structure.
+#        """
+#        return iter(self._registers)
+#
+#    def __len__(self) -> int:
+#        """
+#        :return: Number of registers in the register structure
+#        """
+#        return len(self._registers)
+#
+#
+# class Register(_RegisterBase, Mapping[str, "Field"]):
+#    """
+#    Physical register instance containing a value.
+#    Represents either a SVD register element without dimensions,
+#    or a specific index of a register array.
+#    """
+#
+#    __slots__ = ["_fields"]
+#
+#    def __init__(self, **kwargs):
+#        """
+#        Initialize the class attribute(s).
+#        See parent class for a description of parameters.
+#        """
+#        super().__init__(**kwargs)
+#
+#        if self._description.fields is not None:
+#            self._fields = LazyStaticMapping(
+#                keys=self._description.fields.keys(),
+#                factory=lambda name: Field(
+#                    description=self._description.fields[name], register=self
+#                ),
+#            )
+#        else:
+#            self._fields = {}
+#
+#    @property
+#    def modified(self) -> bool:
+#        """True if the register contains a different value now than at reset."""
+#        return self.content != self.reset_content
+#
+#    @property
+#    def content(self) -> int:
+#        """Current value of the register."""
+#        return self._peripheral._mutable_contents[self.offset]
+#
+#    @content.setter
+#    def content(self, new_content: int) -> None:
+#        """
+#        Set the value of the register.
+#
+#        :param new_content: New value for the register.
+#        """
+#        self.set_content(new_content)
+#
+#    def set_content(self, new_content: int, mask: Optional[int] = None):
+#        """
+#        Set the value of the register.
+#
+#        :param new_content: New value for the register.
+#        :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
+#        """
+#        if (
+#            new_content > 0
+#            and math.ceil(math.log2(new_content)) > self._description.reg_props.size
+#        ):
+#            raise ValueError(
+#                f"Value {hex(new_content)} is too large for {self._description.reg_props.size}-bit "
+#                f"register {self.path}."
+#            )
+#
+#        for field in self.values():
+#            # Only check fields that are affected by the mask
+#            if mask is None or mask & field.mask:
+#                field_content = field._extract_content_from_register(new_content)
+#                if field_content not in field.allowed_values:
+#                    raise ValueError(
+#                        f"Value {hex(new_content)} is invalid for register {self.path}, as field "
+#                        f"{field.full_name} does not accept the value {hex(field_content)}."
+#                    )
+#
+#        if mask is not None:
+#            # Update only the bits indicated by the mask
+#            new_content = (self.content & ~mask) | (new_content & mask)
+#        else:
+#            new_content = new_content
+#
+#        self._peripheral._mutable_contents[self.offset] = new_content
+#
+#    @property
+#    def fields(self) -> Mapping[str, Field]:
+#        """Map of fields in the register, indexed by name"""
+#        return MappingProxyType(self._fields)
+#
+#    def unconstrain(self) -> None:
+#        """
+#        Remove all value constraints imposed on the register.
+#        """
+#        for field in self.values():
+#            field.unconstrain()
+#
+#    def register_iter(
+#        self, flat: bool = False, leaf_only: bool = False
+#    ) -> Iterator[RegisterType]:
+#        """
+#        Recursive iterator over the registers in the peripheral in pre-order.
+#        See Peripheral.register_iter().
+#        """
+#        if not flat or self._array_index is None:
+#            yield self
+#
+#    def __getitem__(self, path: Union[str, Sequence[str]]) -> Field:
+#        """
+#        :param name: Field name.
+#
+#        :return: The instance of the specified field.
+#        """
+#        try:
+#            return self._fields[path]
+#        except LookupError as e:
+#            raise KeyError(
+#                f"{self.__class__} {self._path_with_peripheral} "
+#                f"does not define a field with name '{path}'"
+#            ) from e
+#
+#    def __setitem__(self, key: str, value: Union[str, int]) -> None:
+#        """
+#        :param key: Either the bit offset of a field, or the field's name.
+#        :param value: A raw numeric value, or a field enumeration, to write
+#            to the selected register field.
+#        """
+#        self[key].content = value
+#
+#    def __iter__(self) -> Iterator[str]:
+#        """
+#        :return: Iterator over the field names in the register.
+#        """
+#        return iter(self._fields)
+#
+#    def __len__(self) -> int:
+#        """
+#        :return: Number of fields in the register.
+#        """
+#        return len(self._fields)
+#
+#    def __repr__(self) -> str:
+#        bool_props = ("modified",) if self.modified else ()
+#
+#        return _svd_element_repr(
+#            self.__class__,
+#            self.path,
+#            address=self.offset,
+#            content=self.content,
+#            bool_props=bool_props,
+#        )
+#
+#
+### Member type in a dimensioned register
+# MT = TypeVar("MT")
+#
+#
+# class _DimensionedRegister(_RegisterBase, Sequence[MT]):
+#    """
+#    Base class for register arrays.
+#    """
+#
+#    __slots__ = ["_array_offsets", "_array"]
+#
+#    # Register type contained in the register array, to be set by child classes
+#    # This annotation is just here to satisfy the type checker
+#    member_type: Type[MT]
+#
+#    def __init__(self, description: _RegisterDescription, **kwargs):
+#        self._array_offsets: Sequence[int] = description.dim_props.to_range()
+#
+#        self._array: Sequence[MT] = LazyStaticList(
+#            length=len(self._array_offsets),
+#            factory=lambda i: self.member_type(
+#                description=self._description,
+#                peripheral=self._peripheral,
+#                instance_offset=self._instance_offset + self._array_offsets[i],
+#                path=self.path.join(i),
+#            ),
+#        )
+#
+#        super().__init__(description=description, **kwargs)
+#
+#    @property
+#    def dimensions(self) -> Dimensions:
+#        """Dimensions of the register array."""
+#        return self._description.dim_props
+#
+#    def __getitem__(self, path: Union[int, Sequence[str, int]]) -> MT:
+#        """
+#        :param index: Index of the register in the register array.
+#
+#        :return: The instance of the specified register.
+#        """
+#        try:
+#            return self._array[path]
+#        except IndexError as e:
+#            raise IndexError(f"{self!s}: array index {path} is out of range") from e
+#
+#    def __iter__(self) -> Iterator[MT]:
+#        """
+#        :return: Iterator over the registers in the register array.
+#        """
+#        return iter(self._array)
+#
+#    def __len__(self) -> int:
+#        """
+#        :return: Number of registers in the register array.
+#        """
+#        return len(self._array)
+#
+#    def __repr__(self) -> str:
+#        """Short description of the register."""
+#        return _svd_element_repr(
+#            self.__class__,
+#            self.path,
+#            address=self.offset,
+#            length=len(self),
+#        )
+#
+#
+# class RegisterStructArray(_DimensionedRegister[RegisterStruct]):
+#    """
+#    Array of RegisterStruct objects.
+#    SVD cluster elements with dimensions are represented using this class.
+#    """
+#
+#    @property
+#    def member_type(self) -> Type:
+#        return RegisterStruct
+#
+#    def register_iter(
+#        self, flat: bool = False, leaf_only: bool = False
+#    ) -> Iterator[RegisterStruct]:
+#        """
+#        Recursive iterator over the registers in the peripheral in pre-order.
+#        See Peripheral.register_iter().
+#        """
+#        if flat or not leaf_only:
+#            yield self
+#
+#        if flat:
+#            yield from self[0].register_iter(flat=flat, leaf_only=leaf_only)
+#        else:
+#            for child in self:
+#                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
+#
+#
+# class RegisterArray(_DimensionedRegister[Register]):
+#    """
+#    Array of Register objects.
+#    SVD register elements with dimensions are represented using this class.
+#    """
+#
+#    @property
+#    def member_type(self) -> Type:
+#        return Register
+#
+#    def register_iter(self, flat: bool, leaf_only: bool = False) -> Iterator[Register]:
+#        """
+#        Recursive iterator over the registers in the peripheral in pre-order.
+#        See Peripheral.register_iter().
+#        """
+#        if flat or not leaf_only:
+#            yield self
+#
+#        if not flat:
+#            for child in self:
+#                yield from child.register_iter(flat=flat, leaf_only=leaf_only)
+#
+#
+## Union of all register types
+# RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArray]
+#
+#
+# def _create_register_instance(
+#    description: _RegisterDescription, is_element: bool = False, **kwargs
+# ) -> RegisterType:
+#    """
+#    Create a mutable register instance from a register description.
+#
+#    :param description: Register description
+#    :param index: Index of the register in the parent register array, if applicable
+#    :return: Register instance
+#    """
+#    if description.registers is not None:
+#        if description.dim_props is not None and not is_element:
+#            return RegisterStructArray(description=description, **kwargs)
+#        return RegisterStruct(description=description, **kwargs)
+#    else:
+#        if description.dim_props is not None and not is_element:
+#            return RegisterArray(description=description, **kwargs)
+#        return Register(description=description, **kwargs)
+#
 
 
 class _FieldDescription(NamedTuple):

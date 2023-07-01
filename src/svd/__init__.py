@@ -27,11 +27,7 @@ from .path import SPath
 from .device import (
     Device,
     Peripheral,
-    RegisterType,
     Register,
-    RegisterArray,
-    RegisterStruct,
-    RegisterStructArray,
     Field,
 )
 
