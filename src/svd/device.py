@@ -54,7 +54,7 @@ from .util import LazyStaticList, LazyStaticMapping
 
 from time import perf_counter_ns
 
-LOG_TIME = True
+LOG_TIME = False
 
 
 class Device(Mapping[str, "Peripheral"]):
