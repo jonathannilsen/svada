@@ -54,7 +54,7 @@ from .util import LazyStaticList, LazyStaticMapping
 
 from time import perf_counter_ns
 
-LOG_TIME = False
+LOG_TIME = True
 
 
 class Device(Mapping[str, "Peripheral"]):
@@ -1052,8 +1052,15 @@ class _FieldDescription(NamedTuple):
         :param element: ElementTree representation of an SVD Field element.
         """
 
+        #print(ET.tostring(element))
+
+        t = perf_counter_ns()
+
         name = element.name
         bit_range = element.bit_range
+
+        HELPER_TIMES["field_name_bit"] += perf_counter_ns() - t
+        t = perf_counter_ns()
 
         # We do not support "do not care" bits, as by marking bits "x", see
         # SVD docs "/device/peripherals/peripheral/registers/.../enumeratedValue"
@@ -1063,6 +1070,11 @@ class _FieldDescription(NamedTuple):
             enums = {}
 
         allowed_values = set(enums.values()) if enums else range(2**bit_range.width)
+
+        HELPER_TIMES["field_enum"] += perf_counter_ns() -t
+
+#        enums = {}
+#        allowed_values = range(2**bit_range.width)
 
         return cls(
             name=name,
@@ -1411,6 +1423,13 @@ def _extract_register_info(
         print(f"3: {(perf_counter_ns() - t) / 1_000_000:.2f}")
     t = perf_counter_ns()
 
+    if LOG_TIME:
+        for k, v in HELPER_TIMES.items():
+            print(f"{k}: {v / 1_000_000:.2f} ms")
+        print()
+
+    HELPER_TIMES.clear()
+
     return _ExtractedRegisterInfo(descriptions, reset_content)
 
 
@@ -1452,6 +1471,8 @@ SIZE_TO_DTYPE = {
     4: np.dtype((np.dtype("<u4"), (np.uint8, 4))),
 }
 
+HELPER_TIMES = defaultdict(int)
+
 
 def _extract_register_descriptions_helper(
     content: np.ndarray,
@@ -1480,9 +1501,9 @@ def _extract_register_descriptions_helper(
         dim_props = element.dimensions
         address_offset = element.offset
 
-        # TODO: avoid filling if reset value is 0!
-
         if isinstance(element, bindings.RegisterElement):
+            t = perf_counter_ns()
+
             # Register addresses are defined relative to the enclosing element
             if address_offset is not None:
                 address_start = base_address + address_offset
@@ -1490,6 +1511,8 @@ def _extract_register_descriptions_helper(
                 address_start = base_address
 
             size_bytes = reg_props.size // 8
+
+            k = perf_counter_ns()
 
             if dim_props is not None and dim_props.length > 1:
                 if dim_props.step == size_bytes:
@@ -1500,16 +1523,25 @@ def _extract_register_descriptions_helper(
                 address_end = address_start + size_bytes
                 address_mask = np.ones(size_bytes, bool)
 
+            HELPER_TIMES["reg1"] += perf_counter_ns() - k
+            k = perf_counter_ns()
+
             if reg_props.reset_value != 0:  # FIXME: compare to peripheral reset_value
                 reset_value_dtype = SIZE_TO_DTYPE[size_bytes]
-                content[address_start:address_end].view(reset_value_dtype)[
-                    :
-                ] = reg_props.reset_value
+                content[address_start:address_end].view(reset_value_dtype)[:] = reg_props.reset_value
+
+            HELPER_TIMES["reg2"] += perf_counter_ns() - k
+            k = perf_counter_ns()
 
             registers = None
             fields = _extract_field_descriptions(element.fields)
 
+            HELPER_TIMES["reg3"] += perf_counter_ns() - k
+
+            HELPER_TIMES["reg"] += perf_counter_ns() - t
+
         else:  # ClusterElement
+            t = perf_counter_ns()
             # By the SVD specification, cluster addresses are defined relative to the peripheral
             # base address, but some SVDs don't follow this rule.
             if address_offset is not None:
@@ -1518,12 +1550,16 @@ def _extract_register_descriptions_helper(
             else:
                 address_start = base_address
 
+            HELPER_TIMES["clu"] += perf_counter_ns() - t
+
             child_results = _extract_register_descriptions_helper(
                 content=content,
                 elements=element.registers,
                 base_reg_props=reg_props,
                 base_address=address_start,
             )
+
+            t = perf_counter_ns()
 
             registers = {}
             last_address_end = None
@@ -1569,6 +1605,8 @@ def _extract_register_descriptions_helper(
                     address_end + dim_props.to_range()[-1]
                 )  # TODO: is this correct?
 
+                HELPER_TIMES["clu"] += perf_counter_ns() - t
+
         description = _RegisterDescription(
             element=element,
             name=name,
@@ -1588,7 +1626,11 @@ def _extract_register_descriptions_helper(
             )
         )
 
+    t = perf_counter_ns()
+
     sorted_result = sorted(total_result, key=lambda r: r.address_start)
+
+    HELPER_TIMES["sort"] += perf_counter_ns() - t
 
     return sorted_result
 
@@ -1603,12 +1645,21 @@ def _extract_field_descriptions(
     :param elements: Field elements to process.
     :return: Mapping of field descriptions, indexed by name.
     """
+
+    t = perf_counter_ns()
+    field_descriptions_unsorted = [_FieldDescription.from_element(field) for field in elements]
+    HELPER_TIMES["fields_con"] += perf_counter_ns() - t
+
+    t = perf_counter_ns()
     field_descriptions = sorted(
-        [_FieldDescription.from_element(field) for field in elements],
+        field_descriptions_unsorted,
         key=lambda field: field.bit_range.offset,
     )
 
+
     fields = {description.name: description for description in field_descriptions}
+
+    HELPER_TIMES["fields_rest"] = perf_counter_ns() - t
 
     if not fields:
         return None
