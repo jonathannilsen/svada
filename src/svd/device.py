@@ -158,7 +158,7 @@ class Device(Mapping[str, "Peripheral"]):
         return _svd_element_repr(self.__class__, self._qualified_name, length=len(self))
 
 
-class Peripheral(Mapping[str, "Register"]):
+class Peripheral(Mapping[str, "RegisterType"]):
     """
     Representation of a specific device peripheral.
 
@@ -221,7 +221,7 @@ class Peripheral(Mapping[str, "Register"]):
         return (
             LazyStaticMapping(
                 keys=self._register_descriptions.keys(),
-                factory=lambda name: Register(
+                factory=lambda name: _create_register_instance(
                     description=self._register_descriptions[name],
                     peripheral=self,
                     path=SPath(name),
@@ -231,7 +231,7 @@ class Peripheral(Mapping[str, "Register"]):
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[Register]:
+    ) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -398,37 +398,14 @@ class _RegisterDescription(NamedTuple):
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
 
-class RegisterTypeX(enum.Enum):
-    STRUCT_ARRAY = enum.auto()
-    REGISTER_ARRAY = enum.auto()
-    STRUCT = enum.auto()
-    REGISTER = enum.auto()
-
-
-class Register:
-    """
-    Physical register instance containing a value.
-    Represents either a SVD register element without dimensions,
-    or a specific index of a register array.
-
-    Register structure representing a group of registers.
-    Represents either a SVD cluster element without dimensions,
-    or a specific index of a cluster array.
-
-    Array of RegisterStruct objects.
-    SVD cluster elements with dimensions are represented using this class.
-
-    Array of Register objects.
-    SVD register elements with dimensions are represented using this class.
-    """
+class _RegisterBase:
+    """Base class for all register types"""
 
     __slots__ = [
         "_description",
         "_peripheral",
         "_path",
         "_instance_offset",
-        "_registers",
-        "_fields",
     ]
 
     def __init__(
@@ -449,19 +426,6 @@ class Register:
         self._peripheral: Peripheral = peripheral
         self._path: SPath = path
         self._instance_offset: int = instance_offset
-        self._registers: Optional[Union[Mapping[str, Register], Sequence[Register]]] = None
-        self._fields: Optional[Mapping[str, Field]]= None
-
-    @property
-    def typex(self) -> RegisterTypeX:
-        """TODO: consider whether this is necessary"""
-        is_array = self.dimensions is not None and self._array_index is None
-        is_struct = self._description.registers is not None
-
-        if is_struct:
-            return RegisterTypeX.STRUCT_ARRAY if is_array else RegisterTypeX.STRUCT
-        else:
-            return RegisterTypeX.REGISTER_ARRAY if is_array else RegisterTypeX.REGISTER
 
     @property
     def name(self) -> str:
@@ -514,62 +478,24 @@ class Register:
         return self.content != self.reset_content
 
     @property
-    def dimensions(self) -> Dimensions:
-        """Dimensions of the register array."""
+    def dimensions(self) -> Optional[Dimensions]:
+        """Dimensions of the register, if any."""
         return self._description.dim_props
 
+    # TODO: Rewrite to use np api
     @property
     def content(self) -> int:
         """Current value of the register."""
         return self._peripheral._mutable_contents[self.offset]
 
-    @content.setter
-    def content(self, new_content: int) -> None:
-        """
-        Set the value of the register.
-
-        :param new_content: New value for the register.
-        """
-        self.set_content(new_content)
-
-    def set_content(self, new_content: int, mask: Optional[int] = None):
-        """
-        Set the value of the register.
-
-        :param new_content: New value for the register.
-        :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
-        """
-        if (
-            new_content > 0
-            and math.ceil(math.log2(new_content)) > self._description.reg_props.size
-        ):
-            raise ValueError(
-                f"Value {hex(new_content)} is too large for {self._description.reg_props.size}-bit "
-                f"register {self.path}."
-            )
-
-        for field in self.values():
-            # Only check fields that are affected by the mask
-            if mask is None or mask & field.mask:
-                field_content = field._extract_content_from_register(new_content)
-                if field_content not in field.allowed_values:
-                    raise ValueError(
-                        f"Value {hex(new_content)} is invalid for register {self.path}, as field "
-                        f"{field.full_name} does not accept the value {hex(field_content)}."
-                    )
-
-        if mask is not None:
-            # Update only the bits indicated by the mask
-            new_content = (self.content & ~mask) | (new_content & mask)
-        else:
-            new_content = new_content
-
-        self._peripheral._mutable_contents[self.offset] = new_content
+    @property
+    def registers(self) -> Optional[Mapping[str, RegisterType]]:
+        return None
 
     @property
-    def fields(self) -> Mapping[str, Field]:
+    def fields(self) -> Optional[Mapping[str, Field]]:
         """Map of fields in the register, indexed by name"""
-        return MappingProxyType(self._fields)
+        return None
 
     def unconstrain(self) -> None:
         """
@@ -585,6 +511,7 @@ class Register:
         Recursive iterator over the registers in the peripheral in pre-order.
         See Peripheral.register_iter().
         """
+        # FIXME: can this be here?
         return _register_iter_helper(
             peripheral=self._peripheral,
             registers=self._description.registers,
@@ -619,34 +546,7 @@ class Register:
 #        return len(self._array)
 
     def __repr__(self) -> str:
-        bool_props = ("modified",) if self.modified else ()
-
-        return _svd_element_repr(
-            self.__class__,
-            self.path,
-            address=self.offset,
-            length=self.dimensions.length if self.dimensions is not None else None,
-            content=None,  # TODO
-            bool_props=bool_props,
-        )
-
-    @property
-    def _registers(self):
-        if self._registers is not None:
-            return self._registers
-        if
-
-    @property
-    def _fields(self):
-        if self._description.fields is not None:
-            self._fields = LazyStaticMapping(
-                keys=self._description.fields.keys(),
-                factory=lambda name: Field(
-                    description=self._description.fields[name], register=self
-                ),
-            )
-        else:
-            self._fields = {}
+        return _svd_element_repr(self.__class__, self.path, address=self.offset)
 
     @property
     def _path_with_peripheral(self) -> str:
@@ -662,7 +562,7 @@ class Register:
         return self._path.parts[-1]
 
 
- class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Register"]]):
+class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Register"]]):
     """
     Register structure representing a group of registers.
     Represents either a SVD cluster element without dimensions,
@@ -689,7 +589,7 @@ class Register:
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[Register]:
+    ) -> Iterator[RegisterType]:
         """
         Recursive iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -705,7 +605,7 @@ class Register:
         for register in self.values():
             yield from register.register_iter(flat=flat, leaf_only=leaf_only)
 
-    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> Register:
+    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterType:
         """
         :param name: Register name.
 
@@ -742,7 +642,7 @@ class Register:
         return len(self._registers)
 
 
- class Register(_RegisterBase, Mapping[str, "Field"]):
+class Register(_RegisterBase, Mapping[str, "Field"]):
     """
     Physical register instance containing a value.
     Represents either a SVD register element without dimensions,
@@ -889,11 +789,11 @@ class Register:
         )
 
 
-## Member type in a dimensioned register
- MT = TypeVar("MT")
+# Member type in a dimensioned register
+MT = TypeVar("MT")
 
 
- class _DimensionedRegister(_RegisterBase, Sequence[MT]):
+class _DimensionedRegister(_RegisterBase, Sequence[MT]):
     """
     Base class for register arrays.
     """
@@ -955,6 +855,55 @@ class Register:
             address=self.offset,
             length=len(self),
         )
+
+
+class RegisterStructArray(_DimensionedRegister[RegisterStruct]):
+    """
+    Array of RegisterStruct objects.
+    SVD cluster elements with dimensions are represented using this class.
+    """
+
+    @property
+    def member_type(self) -> Type:
+        return RegisterStruct
+
+
+class RegisterArray(_DimensionedRegister[Register]):
+    """
+    Array of Register objects.
+    SVD register elements with dimensions are represented using this class.
+    """
+
+    @property
+    def member_type(self) -> Type:
+        return Register
+
+
+# Union of all register types
+RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArray]
+
+
+def _create_register_instance(
+    description: _RegisterDescription, is_element: bool = False, **kwargs
+) -> RegisterType:
+    """
+    Create a mutable register instance from a register description.
+
+    :param description: Register description
+    :param index: Index of the register in the parent register array, if applicable
+    :return: Register instance
+    """
+    if description.registers is not None:
+        if description.dim_props is not None and not is_element:
+            return RegisterStructArray(description=description, **kwargs)
+        return RegisterStruct(description=description, **kwargs)
+    else:
+        if description.dim_props is not None and not is_element:
+            return RegisterArray(description=description, **kwargs)
+        return Register(description=description, **kwargs)
+
+
+
 
 class _FieldDescription(NamedTuple):
     """
