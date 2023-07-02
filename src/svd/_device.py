@@ -33,6 +33,7 @@ from typing import (
 
 from . import bindings
 
+
 def topo_sort_derived_peripherals(
     peripherals: Iterable[bindings.PeripheralElement],
 ) -> List[bindings.PeripheralElement]:

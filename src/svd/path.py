@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
 
 
 class SPath(Sequence[Union[str, int]]):
@@ -16,7 +16,6 @@ class SPath(Sequence[Union[str, int]]):
     __slots__ = "_parts"
 
     # TODO: docstrings
-    # TODO: can parts reuse a slice of a SvdPart?
 
     def __init__(self, *parts: Union[SPath, str, int]) -> None:
         if not parts:
@@ -67,6 +66,13 @@ class SPath(Sequence[Union[str, int]]):
             return self
         return SPath(*self._parts[:-1])
 
+    @property
+    def index(self) -> Optional[int]:
+        """Index of the register in the parent array, if applicable."""
+        if not isinstance(self[-1], int):
+            return None
+        return self[-1]
+
     def is_array_element(self) -> bool:
         return isinstance(self[-1], int)
 
@@ -84,6 +90,12 @@ class SPath(Sequence[Union[str, int]]):
 
     def __repr__(self) -> str:
         return self._format_parts(self.parts)
+
+    def __hash__(self) -> int:
+        return hash(self.parts)
+
+    def __eq__(self, other: Any) -> bool: # FIXME: is this valid?
+        return self.parts == other
 
     @staticmethod
     def _format_parts(parts: Iterable[Union[str, int]]) -> str:
@@ -133,16 +145,3 @@ class SPath(Sequence[Union[str, int]]):
                 parsed_parts.append(subpart_match["name"])
 
         return parsed_parts
-
-
-def main():
-    # print(SvdPath("a", "b", "c"))
-    # print(SvdPath("d", 0, "f"))
-    # print(SvdPath("REG", 0).join(SvdPath("FIELD")))
-    # print(SvdPath("REG", 0).join("REG2").join("FIELD"))
-    # print(SvdPath(0).join(1).join(2).join("R[3]"))
-    print(SPath("A[0].B[2].C[1].FIELD"))
-
-
-if __name__ == "__main__":
-    main()

@@ -20,7 +20,7 @@ def printer(svd_file, print_fields, flat):
 def format_ms(time_ns):
     return f"{time_ns / 1_000_000:.2f} ms"
 
-def timer(svd_file, flat):
+def timer(svd_file, fields, flat):
     time_table = []
 
     t_before = perf_counter_ns()
@@ -32,13 +32,20 @@ def timer(svd_file, flat):
         peripheral._immutable_register_info
         t_2 = perf_counter_ns()
         for register in peripheral.register_iter(flat=flat):
-            for field in register.fields.values():
-                ...
+            if fields and register.fields is not None:
+                for field in register.fields.values():
+                    ...
         t_3 = perf_counter_ns()
+        for register in peripheral.register_iter(flat=flat):
+            if fields and register.fields is not None:
+                for field in register.fields.values():
+                    ...
+        t_4 = perf_counter_ns()
         time_table.append({
             "peripheral": str(peripheral),
             "t_immutable": format_ms(t_2 - t_1),
-            "t_iterate": format_ms(t_3 - t_2),
+            "t_iterate_1": format_ms(t_3 - t_2),
+            "t_iterate_2": format_ms(t_4 - t_3),
         })
 
     t_after = perf_counter_ns()
@@ -66,7 +73,7 @@ def main():
     args = p.parse_args()
 
     if args.mode == "time":
-        timer(args.svd_file, args.flat)
+        timer(args.svd_file, args.fields, args.flat)
     else:
         printer(args.svd_file, args.fields, args.flat)
 
