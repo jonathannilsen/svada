@@ -6,15 +6,15 @@
 
 """
 High level representation of a SVD device.
+This representation does not aim to represent all the information contained in the SVD file,
+but instead focuses on certain key features of the device description.
 """
 
 from __future__ import annotations
 
-import enum
 import math
 from collections import ChainMap, defaultdict, deque
 from functools import cached_property
-from itertools import chain
 from types import MappingProxyType
 from typing import (
     Any,
@@ -48,13 +48,10 @@ from .bindings import (
     ReadAction,
     WriteConstraint,
 )
+from ._device import topo_sort_derived_peripherals, svd_element_repr
 from .path import SPath
 from . import util
 from .util import LazyStaticList, LazyStaticMapping
-
-from time import perf_counter_ns
-
-LOG_TIME = False
 
 
 class Device(Mapping[str, "Peripheral"]):
@@ -70,7 +67,7 @@ class Device(Mapping[str, "Peripheral"]):
 
         # Process peripherals in topological order to ensure that base peripherals are processed
         # before derived peripherals.
-        for peripheral_element in _topo_sort_derived_peripherals(device.peripherals):
+        for peripheral_element in topo_sort_derived_peripherals(device.peripherals):
             if peripheral_element.is_derived:
                 base_peripheral = peripherals_unsorted[peripheral_element.derived_from]
             else:
@@ -155,7 +152,7 @@ class Device(Mapping[str, "Peripheral"]):
         return len(self._peripherals)
 
     def __repr__(self) -> str:
-        return _svd_element_repr(self.__class__, self._qualified_name, length=len(self))
+        return svd_element_repr(self.__class__, self._qualified_name, length=len(self))
 
 
 class Peripheral(Mapping[str, "RegisterType"]):
@@ -337,7 +334,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
         return len(self.registers)
 
     def __repr__(self) -> str:
-        return _svd_element_repr(self.__class__, self.name, address=self.base_address)
+        return svd_element_repr(self.__class__, self.name, address=self.base_address)
 
 
 def _register_iter_helper(
@@ -353,8 +350,9 @@ def _register_iter_helper(
     while queue:
         path, offset, description = queue.pop()
 
-        register = Register(
+        register = _create_register_instance(
             description=description,
+            is_element=isinstance(path[-1], int),
             peripheral=peripheral,
             path=path,
             instance_offset=offset,
@@ -390,7 +388,8 @@ class _RegisterDescription(NamedTuple):
     """
 
     name: str
-    start_offset: int
+    offset_start: int
+    offset_end: int
     reg_props: bindings.RegisterProperties
     dim_props: Optional[bindings.Dimensions]
     registers: Optional[Mapping[str, _RegisterDescription]]
@@ -445,7 +444,7 @@ class _RegisterBase:
     @property
     def offset(self) -> int:
         """Address offset of the register, relative to the peripheral it is contained in"""
-        return self._description.start_offset + self._instance_offset
+        return self._description.offset_start + self._instance_offset
 
     @property
     def bit_width(self) -> int:
@@ -533,20 +532,20 @@ class _RegisterBase:
                 f"does not contain a register named '{path}'"
             ) from e
 
-#    def __iter__(self) -> Iterator[MT]:
-#        """
-#        :return: Iterator over the registers in the register array.
-#        """
-#        return iter(self._array)
-#
-#    def __len__(self) -> int:
-#        """
-#        :return: Number of registers in the register array.
-#        """
-#        return len(self._array)
+    #    def __iter__(self) -> Iterator[MT]:
+    #        """
+    #        :return: Iterator over the registers in the register array.
+    #        """
+    #        return iter(self._array)
+    #
+    #    def __len__(self) -> int:
+    #        """
+    #        :return: Number of registers in the register array.
+    #        """
+    #        return len(self._array)
 
     def __repr__(self) -> str:
-        return _svd_element_repr(self.__class__, self.path, address=self.offset)
+        return svd_element_repr(self.__class__, self.path, address=self.offset)
 
     @property
     def _path_with_peripheral(self) -> str:
@@ -780,7 +779,7 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
     def __repr__(self) -> str:
         bool_props = ("modified",) if self.modified else ()
 
-        return _svd_element_repr(
+        return svd_element_repr(
             self.__class__,
             self.path,
             address=self.offset,
@@ -849,7 +848,7 @@ class _DimensionedRegister(_RegisterBase, Sequence[MT]):
 
     def __repr__(self) -> str:
         """Short description of the register."""
-        return _svd_element_repr(
+        return svd_element_repr(
             self.__class__,
             self.path,
             address=self.offset,
@@ -884,7 +883,7 @@ RegisterType = Union[Register, RegisterArray, RegisterStruct, RegisterStructArra
 
 
 def _create_register_instance(
-    description: _RegisterDescription, is_element: bool = False, **kwargs
+    description: _RegisterDescription, is_element: bool = False, **kwargs: Any
 ) -> RegisterType:
     """
     Create a mutable register instance from a register description.
@@ -893,16 +892,20 @@ def _create_register_instance(
     :param index: Index of the register in the parent register array, if applicable
     :return: Register instance
     """
-    if description.registers is not None:
-        if description.dim_props is not None and not is_element:
+
+    is_array = description.dim_props is not None and not is_element
+    is_struct = description.registers is not None
+
+    if is_struct:
+        if is_array:
             return RegisterStructArray(description=description, **kwargs)
-        return RegisterStruct(description=description, **kwargs)
+        else:
+            return RegisterStruct(description=description, **kwargs)
     else:
-        if description.dim_props is not None and not is_element:
+        if is_array:
             return RegisterArray(description=description, **kwargs)
-        return Register(description=description, **kwargs)
-
-
+        else:
+            return Register(description=description, **kwargs)
 
 
 class _FieldDescription(NamedTuple):
@@ -1152,54 +1155,13 @@ class Field:
     def __repr__(self):
         bool_props = ("modified",) if self.modified else ()
 
-        return _svd_element_repr(
+        return svd_element_repr(
             self.__class__,
             self.path,
             content=self.content,
             content_max_width=self.bit_width,
             bool_props=bool_props,
         )
-
-
-def _topo_sort_derived_peripherals(
-    peripherals: Iterable[bindings.PeripheralElement],
-) -> List[bindings.PeripheralElement]:
-    """
-    Topologically sort the peripherals based on 'derivedFrom' attributes using Kahn's algorithm.
-    The returned list has the property that the peripheral element at index i does not derive from
-    any of the peripherals at indices 0..(i - 1).
-
-    :param peripherals: List of peripheral elements to sort
-    :return: List of peripheral elements topologically sorted based on the 'derivedFrom' attribute.
-    """
-
-    sorted_peripherals: List[bindings.PeripheralElement] = []
-    no_dep_peripherals: List[bindings.PeripheralElement] = []
-    dep_graph: Dict[str, List[bindings.PeripheralElement]] = defaultdict(list)
-
-    for peripheral in peripherals:
-        if peripheral.is_derived:
-            dep_graph[peripheral.derived_from].append(peripheral)
-        else:
-            no_dep_peripherals.append(peripheral)
-
-    while no_dep_peripherals:
-        peripheral = no_dep_peripherals.pop()
-        sorted_peripherals.append(peripheral)
-        # Each peripheral has a maximum of one in-edge since they can only derive from one
-        # peripheral. Therefore, once they are encountered here they have no remaining dependencies.
-        no_dep_peripherals.extend(dep_graph[peripheral.name])
-        dep_graph.pop(peripheral.name, None)
-
-    if dep_graph:
-        raise ValueError(
-            "Unable to determine order in which peripherals are derived. "
-            "This is likely caused either by a cycle in the "
-            "'derivedFrom' attributes, or a 'derivedFrom' attribute pointing to a "
-            "nonexistent peripheral."
-        )
-
-    return sorted_peripherals
 
 
 class _ExtractedRegisterInfo(NamedTuple):
@@ -1210,8 +1172,8 @@ class _ExtractedRegisterInfo(NamedTuple):
 
 
 def numpy_full(length: int, value: int, dtype: np.dtype):
-    # Apparently this special case is not handled by numpy.full.
-    # Explicitly handling it here saves a lot of time.
+    # numpy doesn't seem to handle numpy.full(..., filL_value=0) in any special way.
+    # Using np.zeros() for that case here provides a significant speedup for large arrays.
     if value == 0:
         return np.zeros(length, dtype=dtype)
     else:
@@ -1243,32 +1205,20 @@ def _extract_register_info(
             "The implementation assumes exactly one peripheral address block"
         )
 
-    t = perf_counter_ns()
-
     if base_info is not None:
         reset_content = np.copy(base_info.reset_contents)
     else:
-        # TODO: take dtype from SVD?
+        # TODO: take dtype from SVD? or rather, assert this at device construction
         reset_content = numpy_full(
             address_blocks[0].size, base_reg_props.reset_value, dtype=np.uint8
         )
-
-    if LOG_TIME:
-        print(f"1: {(perf_counter_ns() - t) / 1_000_000:.2f}")
-    t = perf_counter_ns()
+    address_mask = np.zeros_like(reset_content, dtype=bool)
 
     helper_result = _extract_register_descriptions_helper(
-        reset_content, elements, base_reg_props
+        reset_content, address_mask, elements, base_reg_props
     )
 
-    if LOG_TIME:
-        print(f"2: {(perf_counter_ns() - t) / 1_000_000:.2f}")
-    t = perf_counter_ns()
-
-    descriptions = {}
-
-    for res in helper_result:
-        descriptions[res.description.name] = res.description
+    descriptions = {d.name: d for d in helper_result}
 
     if base_info is not None:
         # The register maps are each sorted internally, but need to be merged by address
@@ -1277,32 +1227,11 @@ def _extract_register_info(
             util.iter_merged(
                 descriptions.items(),
                 base_info.descriptions.items(),
-                key=lambda kv: kv[1].start_offset,
+                key=lambda kv: kv[1].offset_start,
             )
         )
 
-    if LOG_TIME:
-        print(f"3: {(perf_counter_ns() - t) / 1_000_000:.2f}")
-    t = perf_counter_ns()
-
-    if LOG_TIME:
-        for k, v in HELPER_TIMES.items():
-            print(f"{k}: {v / 1_000_000:.2f} ms")
-        print()
-
-    HELPER_TIMES.clear()
-
     return _ExtractedRegisterInfo(descriptions, reset_content)
-
-
-class _ExtractHelperResult(NamedTuple):
-    """Container for intermediary results of the register extraction helper."""
-
-    description: _RegisterDescription
-    # TODO: consider creating an abstraction over this once things are done
-    address_mask: np.ndarray
-    address_start: int
-    address_end: int
 
 
 def _expand_dimensioned_content(
@@ -1333,15 +1262,14 @@ SIZE_TO_DTYPE = {
     4: np.dtype((np.dtype("<u4"), (np.uint8, 4))),
 }
 
-HELPER_TIMES = defaultdict(int)
-
 
 def _extract_register_descriptions_helper(
     content: np.ndarray,
+    mask: np.ndarray,
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
-) -> List[_ExtractHelperResult]:
+) -> List[_RegisterDescription]:
     """
     Helper that recursively extracts the names, addresses, register properties, dimensions,
     fields etc. of a collection of SVD register level elements.
@@ -1354,7 +1282,7 @@ def _extract_register_descriptions_helper(
              by name. The second element is the minimum address offset of any of the returned
              registers, used inside this function to sort registers while traversing.
     """
-    total_result: List[_ExtractHelperResult] = []
+    total_result: List[_RegisterDescription] = []
 
     for element in elements:
         # Remove suffixes used for elements with dimensions
@@ -1363,9 +1291,10 @@ def _extract_register_descriptions_helper(
         dim_props = element.dimensions
         address_offset = element.offset
 
-        if isinstance(element, bindings.RegisterElement):
-            t = perf_counter_ns()
+        registers: Optional[Mapping[str, _RegisterDescription]] = None
+        fields: Optional[Mapping[str, _FieldDescription]] = None
 
+        if isinstance(element, bindings.RegisterElement):
             # Register addresses are defined relative to the enclosing element
             if address_offset is not None:
                 address_start = base_address + address_offset
@@ -1374,38 +1303,32 @@ def _extract_register_descriptions_helper(
 
             size_bytes = reg_props.size // 8
 
-            k = perf_counter_ns()
+            # Contiguous fill
+            if dim_props is None or dim_props.step == size_bytes:
+                length = dim_props.length if dim_props is not None else 1
+                address_end = address_start + size_bytes * length
+                dtype = SIZE_TO_DTYPE[size_bytes]
 
-            if dim_props is not None and dim_props.length > 1:
-                if dim_props.step == size_bytes:
-                    address_mask = np.ones(size_bytes * dim_props.length, bool)
-                    address_end = address_start + size_bytes * dim_props.length
-                # else ?
+                mask[address_start:address_end] = True
+
+                content_dst = content[address_start:address_end].view(dtype)
+                content_dst[:] = reg_props.reset_value
+
+            # Fill with gaps
+            elif dim_props is not None and dim_props.step > size_bytes:
+                # TODO
+                # address_mask = np.repeat(...)
+                raise NotImplementedError("TODO")
+                ...
+
+            # step < size_bytes (error)
             else:
-                address_end = address_start + size_bytes
-                address_mask = np.ones(size_bytes, bool)
+                raise ValueError("bad")  # TODO
+                ...
 
-            HELPER_TIMES["reg1"] += perf_counter_ns() - k
-            k = perf_counter_ns()
-
-            if reg_props.reset_value != 0:  # FIXME: compare to peripheral reset_value
-                reset_value_dtype = SIZE_TO_DTYPE[size_bytes]
-                content[address_start:address_end].view(reset_value_dtype)[
-                    :
-                ] = reg_props.reset_value
-
-            HELPER_TIMES["reg2"] += perf_counter_ns() - k
-            k = perf_counter_ns()
-
-            registers = None
             fields = _extract_field_descriptions(element.fields)
 
-            HELPER_TIMES["reg3"] += perf_counter_ns() - k
-
-            HELPER_TIMES["reg"] += perf_counter_ns() - t
-
         else:  # ClusterElement
-            t = perf_counter_ns()
             # By the SVD specification, cluster addresses are defined relative to the peripheral
             # base address, but some SVDs don't follow this rule.
             if address_offset is not None:
@@ -1414,87 +1337,68 @@ def _extract_register_descriptions_helper(
             else:
                 address_start = base_address
 
-            HELPER_TIMES["clu"] += perf_counter_ns() - t
-
             child_results = _extract_register_descriptions_helper(
                 content=content,
+                mask=mask,
                 elements=element.registers,
                 base_reg_props=reg_props,
                 base_address=address_start,
             )
 
-            t = perf_counter_ns()
+            if child_results:
+                registers = {d.name: d for d in child_results}
 
-            registers = {}
-            last_address_end = None
-            address_mask = np.asarray([], dtype=bool)
+                if address_offset is None:
+                    address_start = child_results[0].offset_start
 
-            for result in child_results:
-                registers[result.description.name] = result.description
+                child_address_end = child_results[-1].offset_end
 
-                if last_address_end is not None:
-                    address_gap = result.address_start - last_address_end
-                    assert address_gap >= 0
+                if dim_props is not None and dim_props.length > 1:
+                    if dim_props.step < child_address_end - address_start:
+                        # TODO error
+                        raise ValueError("structural issue")
+
+                    offsets: Sequence[int] = dim_props.to_range()
+                    address_end = address_start + offsets[-1] + dim_props.step
+
+                    # Duplicate content across the dimension
+                    for array in (content, mask):
+                        # TODO: describe this
+                        array_src = array[address_start : address_start + offsets[1]]
+                        array_dst = array[
+                            address_start + offsets[1] : address_end
+                        ].reshape((dim_props.length - 1, dim_props.step))
+                        array_dst[:] = array_src
+
                 else:
-                    address_gap = 0
+                    address_end = child_results[-1].offset_end
 
-                last_address_end = result.address_end
-
-                address_mask = np.pad(address_mask, address_gap)
-                address_mask = np.concatenate([address_mask, result.address_mask])
-
-            address_end = last_address_end
-            fields = None
-
-            # TODO: optimize for the contiguous fill case
-            if dim_props is not None and dim_props.length > 1:
-                # Duplicate content across the dimension
-                for element_offset in dim_props.to_range():
-                    np.copyto(
-                        dst=content[
-                            address_start
-                            + element_offset : address_end
-                            + element_offset
-                        ],
-                        src=content[address_start:address_end],
-                        where=address_mask,
-                    )
-
-                # Duplicate the address mask across the dimension
-                pad_bytes = address_end - address_start - len(address_mask)
-                if pad_bytes > 0:
-                    address_mask = np.pad(address_mask, pad_bytes)
-                address_mask = np.tile(address_mask, dim_props.length)
-                address_end = (
-                    address_end + dim_props.to_range()[-1]
-                )  # TODO: is this correct?
-
-                HELPER_TIMES["clu"] += perf_counter_ns() - t
+            else:  # This is an empty struct
+                registers = {}
+                address_end = address_start
 
         description = _RegisterDescription(
             element=element,
             name=name,
-            start_offset=address_start,
+            offset_start=address_start,
+            offset_end=address_end,
             reg_props=reg_props,
             dim_props=dim_props,
             registers=registers,
             fields=fields,
         )
 
-        total_result.append(
-            _ExtractHelperResult(
-                description=description,
-                address_mask=address_mask,
-                address_start=address_start,
-                address_end=address_end,
-            )
-        )
+        total_result.append(description)
 
-    t = perf_counter_ns()
+    sorted_result = sorted(total_result, key=lambda r: r.offset_start)
 
-    sorted_result = sorted(total_result, key=lambda r: r.address_start)
-
-    HELPER_TIMES["sort"] += perf_counter_ns() - t
+    # Check that our structural assumptions hold.
+    if len(sorted_result) > 1:
+        for i in range(1, len(sorted_result)):
+            if sorted_result[i - 1].offset_end > sorted_result[i].offset_start:
+                raise ValueError(
+                    "overlapping structures"
+                )  # FIXME: better error message
 
     return sorted_result
 
@@ -1510,76 +1414,11 @@ def _extract_field_descriptions(
     :return: Mapping of field descriptions, indexed by name.
     """
 
-    t = perf_counter_ns()
-    field_descriptions_unsorted = [
-        _FieldDescription.from_element(field) for field in elements
-    ]
-    HELPER_TIMES["fields_con"] += perf_counter_ns() - t
-
-    t = perf_counter_ns()
     field_descriptions = sorted(
-        field_descriptions_unsorted,
+        [_FieldDescription.from_element(field) for field in elements],
         key=lambda field: field.bit_range.offset,
     )
 
     fields = {description.name: description for description in field_descriptions}
 
-    HELPER_TIMES["fields_rest"] = perf_counter_ns() - t
-
-    if not fields:
-        return None
-
     return fields
-
-
-def _svd_element_repr(
-    klass: type,
-    name: str,
-    /,
-    *,
-    address: Optional[int] = None,
-    length: Optional[int] = None,
-    content: Optional[int] = None,
-    content_max_width: int = 32,
-    bool_props: Iterable[Any] = (),
-    kv_props: Mapping[Any, Any] = MappingProxyType({}),
-) -> str:
-    """
-    Common pretty print function for SVD elements.
-
-    :param klass: Class of the element.
-    :param name: Name of the element.
-    :param address: Address of the element.
-    :param content: Length of the element.
-    :param width: Available width of the element, used to zero-pad the value.
-    :param value: Value of the element.
-    :param kwargs: Additional keyword arguments to include in the pretty print.
-
-    :return: Pretty printed string.
-    """
-
-    address_str: str = f" @ 0x{address:08x}" if address is not None else ""
-    length_str: str = f"<{length}>" if length is not None else ""
-
-    if content is not None:
-        leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
-        value_str: str = f" = 0x{leading_zeros}{content:x}"
-    else:
-        value_str: str = ""
-
-    if bool_props or kv_props:
-        bool_props_str: str = (
-            f"{', '.join(f'{v!s}' for v in bool_props)}" if bool_props else ""
-        )
-        kv_props_str: str = (
-            f"{', '.join(f'{k}: {v!s}' for k, v in kv_props.items())})"
-            if kv_props
-            else ""
-        )
-        props_str = f" ({bool_props_str}{', ' if kv_props else ''}{kv_props_str})"
-    else:
-        props_str = ""
-
-    return (
-        f"[{name}{length_str}{address_str}{value_str}{props_str} {{{klass.__name__}}}]"
-    )

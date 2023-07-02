@@ -1,14 +1,18 @@
 #
-# Copyright (c) 2022 Nordic Semiconductor ASA
+# Copyright (c) 2023 Nordic Semiconductor ASA
 #
 # SPDX-License-Identifier: Apache-2.0
 #
 
+"""
+Various internal functionality used by the device module.
+"""
+
 from __future__ import annotations
 
-import enum
-import inspect
 from abc import ABC
+from collections import defaultdict
+from types import MappingProxyType
 from typing import (
     Any,
     Callable,
@@ -27,7 +31,99 @@ from typing import (
     Union,
 )
 
-from lxml import objectify
+from . import bindings
+
+def topo_sort_derived_peripherals(
+    peripherals: Iterable[bindings.PeripheralElement],
+) -> List[bindings.PeripheralElement]:
+    """
+    Topologically sort the peripherals based on 'derivedFrom' attributes using Kahn's algorithm.
+    The returned list has the property that the peripheral element at index i does not derive from
+    any of the peripherals at indices 0..(i - 1).
+
+    :param peripherals: List of peripheral elements to sort
+    :return: List of peripheral elements topologically sorted based on the 'derivedFrom' attribute.
+    """
+
+    sorted_peripherals: List[bindings.PeripheralElement] = []
+    no_dep_peripherals: List[bindings.PeripheralElement] = []
+    dep_graph: Dict[str, List[bindings.PeripheralElement]] = defaultdict(list)
+
+    for peripheral in peripherals:
+        if peripheral.is_derived:
+            dep_graph[peripheral.derived_from].append(peripheral)
+        else:
+            no_dep_peripherals.append(peripheral)
+
+    while no_dep_peripherals:
+        peripheral = no_dep_peripherals.pop()
+        sorted_peripherals.append(peripheral)
+        # Each peripheral has a maximum of one in-edge since they can only derive from one
+        # peripheral. Therefore, once they are encountered here they have no remaining dependencies.
+        no_dep_peripherals.extend(dep_graph[peripheral.name])
+        dep_graph.pop(peripheral.name, None)
+
+    if dep_graph:
+        raise ValueError(
+            "Unable to determine order in which peripherals are derived. "
+            "This is likely caused either by a cycle in the "
+            "'derivedFrom' attributes, or a 'derivedFrom' attribute pointing to a "
+            "nonexistent peripheral."
+        )
+
+    return sorted_peripherals
+
+def svd_element_repr(
+    klass: type,
+    name: str,
+    /,
+    *,
+    address: Optional[int] = None,
+    length: Optional[int] = None,
+    content: Optional[int] = None,
+    content_max_width: int = 32,
+    bool_props: Iterable[Any] = (),
+    kv_props: Mapping[Any, Any] = MappingProxyType({}),
+) -> str:
+    """
+    Common pretty print function for SVD elements.
+
+    :param klass: Class of the element.
+    :param name: Name of the element.
+    :param address: Address of the element.
+    :param content: Length of the element.
+    :param width: Available width of the element, used to zero-pad the value.
+    :param value: Value of the element.
+    :param kwargs: Additional keyword arguments to include in the pretty print.
+
+    :return: Pretty printed string.
+    """
+
+    address_str: str = f" @ 0x{address:08x}" if address is not None else ""
+    length_str: str = f"<{length}>" if length is not None else ""
+
+    if content is not None:
+        leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
+        value_str: str = f" = 0x{leading_zeros}{content:x}"
+    else:
+        value_str: str = ""
+
+    if bool_props or kv_props:
+        bool_props_str: str = (
+            f"{', '.join(f'{v!s}' for v in bool_props)}" if bool_props else ""
+        )
+        kv_props_str: str = (
+            f"{', '.join(f'{k}: {v!s}' for k, v in kv_props.items())})"
+            if kv_props
+            else ""
+        )
+        props_str = f" ({bool_props_str}{', ' if kv_props else ''}{kv_props_str})"
+    else:
+        props_str = ""
+
+    return (
+        f"[{name}{length_str}{address_str}{value_str}{props_str} {{{klass.__name__}}}]"
+    )
 
 
 def strip_suffix(word: str, suffix: str) -> str:
@@ -45,19 +141,6 @@ def strip_suffix(word: str, suffix: str) -> str:
 
     return word
 
-class CaseInsensitiveStrEnum(enum.Enum):
-    """String enum class that can be constructed from a case-insensitive string."""
-
-    @classmethod
-    def from_str(cls, value: str) -> CaseInsensitiveStrEnum:
-        """Construct the enum from a case-insensitive string."""
-        value_lower = value.lower()
-        for member in cls:
-            if member.value.lower() == value_lower:
-                return member
-        raise ValueError(
-            f"Class {cls.__qualname__} has no member corresponding to '{value}'"
-        )
 
 K = TypeVar("K")
 T = TypeVar("T")

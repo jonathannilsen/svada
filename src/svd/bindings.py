@@ -5,8 +5,8 @@
 #
 
 """
-"Low-level" read-only Python representation of the SVD format.
-Each type of element in the SVD XML tree is represented by a class in this module.
+"Low-level" read-only Python representation of the SVD format that aims to represent the full SVD
+document. Each type of element in the SVD XML tree is represented by a class in this module.
 The class properties correspond more or less directly to the XML elements/attributes,
 with some abstractions and simplifications added for convenience.
 """
@@ -15,29 +15,24 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import (
-    Iterator,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Union,
-)
+from typing import Iterator, NamedTuple, Optional, Sequence, Union
 
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
 
-from .util import (
-    CaseInsensitiveStrEnum,
-    attr,
+from ._bindings import (
+    SELF_CLASS,
     BindingRegistry,
+    CaseInsensitiveStrEnum,
+    SvdIntElement,
+    attr,
     elem,
-    make_enum_wrapper,
+    get_binding_elem_props,
     iter_element_children,
+    make_enum_wrapper,
     to_bool,
     to_int,
-    SELF_CLASS,
 )
-
 
 # Container for classes that represent non-leaf elements in the SVD XML tree.
 BINDING_REGISTRY = BindingRegistry()
@@ -48,15 +43,8 @@ binding = BINDING_REGISTRY.add
 # Alias for the BINDING_REGISTRY.bindings for convenience.
 BINDINGS = BINDING_REGISTRY.bindings
 
-
-class SvdIntElement(objectify.IntElement):
-    """
-    Element containing an SVD integer value.
-    This class uses a custom parser to convert the value to an integer.
-    """
-
-    def _init(self):
-        self._setValueParser(to_int)
+# Utility function for the parse module
+get_binding_elem_props = get_binding_elem_props
 
 
 @enum.unique
@@ -286,7 +274,9 @@ class WriteConstraintElement(objectify.ObjectifiedElement):
     TAG = "writeConstraint"
 
     # Value range constraint
-    value_range: Optional[RangeWriteConstraint] = elem("range", RangeWriteConstraint, default=None)
+    value_range: Optional[RangeWriteConstraint] = elem(
+        "range", RangeWriteConstraint, default=None
+    )
 
     def as_enum(self) -> Optional[WriteConstraint]:
         """Return the write constraint as an enum value."""
@@ -301,7 +291,9 @@ class WriteConstraintElement(objectify.ObjectifiedElement):
     _write_as_read: bool = elem("writeAsRead", BoolElement, default=False)
 
     # (internal) If true, only enumerated values can be written.
-    _use_enumerated_values: bool = elem("useEnumeratedValues", BoolElement, default=False)
+    _use_enumerated_values: bool = elem(
+        "useEnumeratedValues", BoolElement, default=False
+    )
 
 
 @binding
@@ -599,9 +591,7 @@ class FieldElement(objectify.ObjectifiedElement, DerivedMixin):
 
     # (internal) Bit range of the field, given in the form "[msb:lsb]", if specified in the
     # bitRangePattern style.
-    _bit_range: Optional[str] = elem(
-        "bitRange", StringElement, default=None
-    )
+    _bit_range: Optional[str] = elem("bitRange", StringElement, default=None)
 
 
 @binding
@@ -634,7 +624,7 @@ class RegisterProperties:
     reset_mask: Optional[int]
 
 
-class RegisterPropertiesGroup:
+class RegisterPropertiesGroupMixin:
     """Common functionality for elements that contain a SVD 'registerPropertiesGroup'."""
 
     @property
@@ -702,7 +692,7 @@ class Dimensions:
         return range(0, (self.length - 1) * self.step + 1, self.step)
 
 
-class DimElementGroup:
+class DimElementGroupMixin:
     """Common functionality for elements that contain a SVD 'dimElementGroup'."""
 
     # Index of the element, if it is repeated.
@@ -733,7 +723,10 @@ class DimElementGroup:
 
 @binding
 class RegisterElement(
-    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
+    objectify.ObjectifiedElement,
+    DimElementGroupMixin,
+    RegisterPropertiesGroupMixin,
+    DerivedMixin,
 ):
     """SVD register element."""
 
@@ -788,7 +781,10 @@ class RegisterElement(
 
 @binding
 class ClusterElement(
-    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
+    objectify.ObjectifiedElement,
+    DimElementGroupMixin,
+    RegisterPropertiesGroupMixin,
+    DerivedMixin,
 ):
     """SVD cluster element."""
 
@@ -844,7 +840,10 @@ class RegistersElement(objectify.ObjectifiedElement):
 
 @binding
 class PeripheralElement(
-    objectify.ObjectifiedElement, DimElementGroup, RegisterPropertiesGroup, DerivedMixin
+    objectify.ObjectifiedElement,
+    DimElementGroupMixin,
+    RegisterPropertiesGroupMixin,
+    DerivedMixin,
 ):
     """SVD peripheral element."""
 
@@ -875,7 +874,9 @@ class PeripheralElement(
     @property
     def registers(self) -> Iterator[Union[RegisterElement, ClusterElement]]:
         """Iterator over the registers and clusters that are direct children of this peripheral."""
-        return iter_element_children(self._registers, RegisterElement.TAG, ClusterElement.TAG)
+        return iter_element_children(
+            self._registers, RegisterElement.TAG, ClusterElement.TAG
+        )
 
     # Name of a different peripheral that corresponds to this peripheral.
     alternate_peripheral: Optional[str] = elem(
@@ -901,12 +902,12 @@ class PeripheralElement(
     )
 
     # (internal) Interrupt elements in the peripheral.
-    _interrupts: Optional[Interrupt] = elem(
-        "interrupt", Interrupt, default=None
-    )
+    _interrupts: Optional[Interrupt] = elem("interrupt", Interrupt, default=None)
 
     # (internal) Address block elements in the peripheral.
-    _address_blocks: Optional[AddressBlock] = elem("addressBlock", AddressBlock, default=None)
+    _address_blocks: Optional[AddressBlock] = elem(
+        "addressBlock", AddressBlock, default=None
+    )
 
     # (internal) Register/cluster container.
     _registers: Optional[RegistersElement] = elem(
@@ -927,7 +928,7 @@ class PeripheralsElement(objectify.ObjectifiedElement):
 
 
 @binding
-class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesGroup):
+class DeviceElement(objectify.ObjectifiedElement, RegisterPropertiesGroupMixin):
     """SVD device element."""
 
     TAG = "device"

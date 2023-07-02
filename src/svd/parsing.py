@@ -14,7 +14,6 @@ import lxml.etree as ET
 from lxml import objectify
 
 from . import bindings
-from . import util
 from .device import Device
 
 
@@ -82,7 +81,7 @@ class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
         for element_class in element_classes:
             tag = element_class.TAG
             tag_classes[tag].add(element_class)
-            for prop in util.get_binding_elem_props(element_class).values():
+            for prop in bindings.get_binding_elem_props(element_class).values():
                 tag_classes[prop.name].add(prop.klass)
                 two_tag_classes[(tag, prop.name)].add(prop.klass)
 
