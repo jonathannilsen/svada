@@ -1191,7 +1191,8 @@ def _extract_register_descriptions_helper(
              by name. The second element is the minimum address offset of any of the returned
              registers, used inside this function to sort registers while traversing.
     """
-    total_result: List[_RegisterDescription] = []
+
+    descriptions: List[_RegisterDescription] = []
     min_address: int = 2**32
     max_address: int = 0
 
@@ -1227,14 +1228,20 @@ def _extract_register_descriptions_helper(
 
             # Fill with gaps
             elif dim_props is not None and dim_props.step > size_bytes:
-                # TODO
-                # address_mask = np.repeat(...)
-                raise NotImplementedError("TODO")
-                ...
+                memory.fill(
+                    start=address_start,
+                    end=address_start + size_bytes,
+                    value=reg_props.reset_value,
+                    elem_size=size_bytes,
+                )
+                memory.tile(
+                    start=address_start,
+                    end=address_start + dim_props.step,
+                    times=dim_props.length,
+                )
 
-            # step < size_bytes (error)
             else:
-                raise ValueError("bad")  # TODO
+                raise ValueError("step less than size")
 
             fields = _extract_field_descriptions(element.fields)
 
@@ -1248,9 +1255,9 @@ def _extract_register_descriptions_helper(
                 address_start = base_address
 
             (
-                child_results,
-                child_min_address,
-                child_max_address,
+                sub_descriptions,
+                sub_min_address,
+                sub_max_address,
             ) = _extract_register_descriptions_helper(
                 memory=memory,
                 elements=element.registers,
@@ -1258,31 +1265,29 @@ def _extract_register_descriptions_helper(
                 base_address=address_start,
             )
 
-            if child_results:
-                registers = {d.name: d for d in child_results}
+            if sub_descriptions:
+                registers = {d.name: d for d in sub_descriptions}
 
                 if address_offset is None:
-                    address_start = child_min_address
-
-                child_address_end = child_max_address
+                    address_start = sub_min_address
 
                 if dim_props is not None and dim_props.length > 1:
-                    if dim_props.step < child_address_end - address_start:
-                        # TODO error
-                        raise ValueError("structural issue")
+                    if dim_props.step < sub_max_address - address_start:
+                        raise ValueError("step less than size")
 
-                    offsets: Sequence[int] = dim_props.to_range()
-                    address_end = address_start + offsets[-1] + dim_props.step
+                    address_end = address_start + dim_props.step * dim_props.length
+
+                    # Copy memory from sub elements along the struct array dimension
                     memory.tile(
                         start=address_start,
                         end=address_start + dim_props.step,
                         times=dim_props.length,
                     )
 
-                else:
-                    address_end = child_max_address
+                else:  # Not an array
+                    address_end = sub_max_address
 
-            else:  # This is an empty struct
+            else:  # Empty struct
                 registers = {}
                 address_end = address_start
 
@@ -1297,11 +1302,11 @@ def _extract_register_descriptions_helper(
             fields=fields,
         )
 
-        total_result.append(description)
+        descriptions.append(description)
         min_address = min(min_address, address_start)
         max_address = max(max_address, address_end)
 
-    sorted_result = sorted(total_result, key=lambda r: r.offset_start)
+    sorted_result = sorted(descriptions, key=lambda r: r.offset_start)
 
     # Check that our structural assumptions hold.
     # (they don't lmao)
