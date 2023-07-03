@@ -235,8 +235,8 @@ class Peripheral(Mapping[str, "RegisterType"]):
         :return: Iterator over the registers in the peripheral.
         """
 
-        return self._register_iter_helper(
-            registers=self._register_descriptions,
+        return _register_iter(
+            self.registers.values(),
             flat=flat,
             leaf_only=leaf_only,
         )
@@ -245,34 +245,36 @@ class Peripheral(Mapping[str, "RegisterType"]):
     def registers(self) -> Mapping[str, Register]:
         """Mapping of top-level registers in the peripheral, indexed by name."""
         return {
-            name: self._get_or_create_register(
-                path=SPath(name), description=description
+            name: _create_register_instance(
+                description=description, peripheral=self, path=SPath(name)
             )
-            for name, description in self._register_descriptions
+            for name, description in self._register_descriptions.items()
         }
 
+    def get_content(self) -> Dict[int, int]:
+        """Memory map of the peripheral register contents."""
+        return self._memory_block.as_dict()
+
     @property
-    def contents(self) -> Mapping[int, int]:
-        """Read-only view of the peripheral register contents in memory."""
-        return MappingProxyType(self._mutable_contents)
+    def word_content(self) -> Dict[int, int]:
+        ...
 
     @cached_property
-    def _mutable_contents(self) -> MutableMapping[int, int]:
+    def _memory_block(self) -> MemoryBlock:
         """
         Mutable mapping of the peripheral register contents in memory.
         Intended for internal use only.
         """
-        return ChainMap({}, dict(self._immutable_register_info.reset_content))
+        return self._register_info.memory
 
     @property
     def _register_descriptions(self) -> Mapping[str, _RegisterDescription]:
         """Mapping of register descriptions in the peripheral, indexed by name."""
-        return self._immutable_register_info.descriptions
+        return self._register_info.descriptions
 
     @cached_property
-    def _immutable_register_info(self) -> _ExtractedRegisterInfo:
-        """
-        Compute the immutable descriptions of the registers contained in the peripheral, taking into
+    def _register_info(self) -> _ExtractedRegisterInfo:
+        """Compute the immutable descriptions of the registers contained in the peripheral, taking into
         account registers derived from the base peripheral, if any.
         """
 
@@ -282,7 +284,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
             # If the register properties are equal, then it is possible to reuse all the immutable
             # properties from the base peripheral.
             if self._base_peripheral._reg_props == self._reg_props:
-                base_info = self._base_peripheral._immutable_register_info
+                base_info = self._base_peripheral._register_info
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
             else:
@@ -292,13 +294,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
                     self._reg_props,
                 )
 
-            address_blocks = self.address_blocks + self._base_peripheral.address_blocks
-
-        else:
-            address_blocks = self.address_blocks
-
         info = _extract_register_info(
-            address_blocks,
             self._peripheral.registers,
             self._reg_props,
             base_info=base_info,
@@ -342,86 +338,33 @@ class Peripheral(Mapping[str, "RegisterType"]):
         """Short peripheral description."""
         return svd_element_repr(self.__class__, self.name, address=self.base_address)
 
-    def _get_or_create_register(
-        self,
-        path: SPath,
-        description: _RegisterDescription,
-        instance_offset: int = 0,
-        relative_to: Optional[SPath] = None,
-    ) -> RegisterType:
-        """ """
-        try:
-            register = self._all_registers[path]
-        except KeyError:
-            register = _create_register_instance(
-                description=description,
-                is_element=path.is_array_element(),
-                peripheral=self,
-                path=path,
-                instance_offset=instance_offset,
-            )
-            self._all_registers[path] = register
 
-        return register
+def _register_iter(
+    registers: Iterable[_RegisterDescription],
+    flat: bool = False,
+    leaf_only: bool = False,
+) -> Iterator[Register]:
+    """ """
 
-    def _register_iter_helper(
-        self,
-        registers: Mapping[str, _RegisterDescription],
-        instance_offset: int = 0,
-        flat: bool = False,
-        leaf_only: bool = False,
-    ) -> Iterator[Register]:
-        """ """
+    queue = deque(registers)
 
-        queue = deque(
-            (SPath(name), instance_offset, desc) for name, desc in registers.items()
+    while queue:
+        register = queue.pop()
+        path = register.path
+        dimensions = register.dimensions
+
+        is_leaf = register.registers is None and (
+            flat or (dimensions is None or path.is_array_element())
         )
 
-        while queue:
-            path, offset, description = queue.pop()
+        if not leaf_only or is_leaf:
+            yield register
 
-            register = self._get_or_create_register(
-                path=path,
-                description=description,
-                instance_offset=offset,
-            )
-
-            is_leaf = description.registers is None and (
-                flat or (description.dim_props is None or path.is_array_element())
-            )
-
-            if not leaf_only or is_leaf:
-                yield register
-
-            if (
-                not flat
-                and description.dim_props is not None
-                and not path.is_array_element()
-            ):
-                # Expand dimensioned register
-                for i, additional_offset in enumerate(description.dim_props.to_range()):
-                    queue.append(
-                        (path.join(i), offset + additional_offset, description)
-                    )
-            elif description.registers is not None:
-                # Expand register structure
-                for name, child_description in description.registers.items():
-                    queue.append((path.join(name), offset, child_description))
-
-
-def _decode_register_path(
-    path: Union[str, int, Sequence[Any]]
-) -> Tuple[Union[str, int], Sequence[Any]]:
-    """Decode a key into a tuple of (initial key, remaining keys)."""
-    if isinstance(path, str) or isinstance(path, int):
-        return path, ()
-    elif isinstance(path, Sequence):
-        if len(path) > 0:
-            return path[0], path[1:]
-        else:
-            return path[0], ()
-    else:
-        raise ValueError(f"Invalid path: {path}")
+        if (
+            not flat and dimensions is not None and not path.is_array_element()
+        ) or register.registers is not None:
+            # Expand dimensioned register
+            queue.extend(register.registers)
 
 
 def _create_register_instance(
@@ -467,6 +410,7 @@ class _RegisterDescription(NamedTuple):
     fields: Optional[Mapping[str, _FieldDescription]]
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
+    # FIXME: remove?
     def compatible_with(self, other: _RegisterDescription) -> bool:
         return (self.offset_start, self.offset_end, self.dim_props) == (
             other.offset_start,
@@ -617,15 +561,15 @@ class RegisterStruct(_RegisterBase, Mapping[str, Union["RegisterArray", "Registe
         """
         super().__init__(**kwargs)
 
-        # self._registers = LazyStaticMapping(
-        #    keys=self._description.registers.keys(),
-        #    factory=lambda name: _create_register_instance(
-        #        description=self._description.registers[name],
-        #        peripheral=self._peripheral,
-        #        instance_offset=self._instance_offset,
-        #        path=self.path.join(name),
-        #    ),
-        # )
+        self._registers = LazyStaticMapping(
+            keys=self._description.registers.keys(),
+            factory=lambda name: _create_register_instance(
+                description=self._description.registers[name],
+                peripheral=self._peripheral,
+                instance_offset=self._instance_offset,
+                path=self.path.join(name),
+            ),
+        )
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
@@ -694,25 +638,27 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         """
         super().__init__(**kwargs)
 
-        if self._description.fields is not None:
-            self._fields = LazyStaticMapping(
-                keys=self._description.fields.keys(),
-                factory=lambda name: Field(
-                    description=self._description.fields[name], register=self
-                ),
-            )
-        else:
-            self._fields = {}
+        self._fields = LazyStaticMapping(
+            keys=self._description.fields.keys(),
+            factory=lambda name: Field(
+                description=self._description.fields[name], register=self
+            ),
+        )
 
     @property
     def modified(self) -> bool:
         """True if the register contains a different value now than at reset."""
         return self.content != self.reset_content
 
+    # FIXME: size should be property?
+
     @property
     def content(self) -> int:
         """Current value of the register."""
-        return self._peripheral._mutable_contents[self.offset]
+        content = self._peripheral._memory_block.at(
+            self.offset, self._description.reg_props.size // 8
+        )
+        return int(content)
 
     @content.setter
     def content(self, new_content: int) -> None:
@@ -730,12 +676,11 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         :param new_content: New value for the register.
         :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
         """
-        if (
-            new_content > 0
-            and math.ceil(math.log2(new_content)) > self._description.reg_props.size
-        ):
+        reg_size = self._description.reg_props.size
+
+        if new_content > 0 and math.ceil(math.log2(new_content)) > reg_size:
             raise ValueError(
-                f"Value {hex(new_content)} is too large for {self._description.reg_props.size}-bit "
+                f"Value {hex(new_content)} is too large for {reg_size}-bit "
                 f"register {self.path}."
             )
 
@@ -755,7 +700,9 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         else:
             new_content = new_content
 
-        self._peripheral._mutable_contents[self.offset] = new_content
+        self._peripheral._memory_block.set_at(
+            self.offset, new_content, elem_size=reg_size // 8
+        )
 
     @property
     def fields(self) -> Mapping[str, Field]:
@@ -824,23 +771,16 @@ class _DimensionedRegister(_RegisterBase, Sequence[MT]):
     Base class for register arrays.
     """
 
-    __slots__ = ["_array_offsets", "_array"]
+    __slots__ = ["_array_offsets", "_array_value"]
 
     # Register type contained in the register array, to be set by child classes
     # This annotation is just here to satisfy the type checker
     member_type: Type[MT]
 
     def __init__(self, description: _RegisterDescription, **kwargs):
-        # self._array_offsets: Sequence[int] = description.dim_props.to_range()
-        # self._array: Sequence[MT] = LazyStaticList(
-        #    length=len(self._array_offsets),
-        #    factory=lambda i: self.member_type(
-        #        description=self._description,
-        #        peripheral=self._peripheral,
-        #        instance_offset=self._instance_offset + self._array_offsets[i],
-        #        path=self.path.join(i),
-        #    ),
-        # )
+        self._array_offsets: Sequence[int] = description.dim_props.to_range()
+        self._array_value: Optional[Sequence[MT]] = None
+        #self._flat_instance: Optional[MT] = None
 
         super().__init__(description=description, **kwargs)
 
@@ -848,6 +788,20 @@ class _DimensionedRegister(_RegisterBase, Sequence[MT]):
     def dimensions(self) -> Dimensions:
         """Dimensions of the register array."""
         return self._description.dim_props
+
+    @property
+    def _array(self) -> Sequence[MT]:
+        if self._array_value is None:
+            self._array_value: Sequence[MT] = LazyStaticList(
+                length=len(self._array_offsets),
+                factory=lambda i: self.member_type(
+                    description=self._description,
+                    peripheral=self._peripheral,
+                    instance_offset=self._instance_offset + self._array_offsets[i],
+                    path=self.path.join(i),
+                ),
+            )
+        return self._array_value
 
     def __getitem__(self, path: Union[int, Sequence[str, int]]) -> MT:
         """
@@ -1169,11 +1123,10 @@ class _ExtractedRegisterInfo(NamedTuple):
     """Container for register descriptions and reset values."""
 
     descriptions: Mapping[str, _RegisterDescription]
-    reset_content: MemoryBlock
+    memory: MemoryBlock
 
 
 def _extract_register_info(
-    address_blocks: List[AddressBlock],
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_info: Optional[_ExtractedRegisterInfo] = None,
@@ -1188,21 +1141,16 @@ def _extract_register_info(
 
     :return: Map of register descriptions, indexed by name.
     """
-    if len(address_blocks) != 1:
-        raise NotImplementedError(
-            "The implementation assumes exactly one peripheral address block"
-        )
+    memory_builder = MemoryBlock.Builder()
 
     if base_info is not None:
-        reset_content = copy(base_info.reset_content)
-    else:
-        reset_content = MemoryBlock(address_blocks[0].size, base_reg_props.reset_value)
+        memory_builder.copy_from(base_info.memory)
 
-    helper_result = _extract_register_descriptions_helper(
-        reset_content, elements, base_reg_props
+    description_list, min_addresss, max_address = _extract_register_descriptions_helper(
+        memory_builder, elements, base_reg_props
     )
 
-    descriptions = {d.name: d for d in helper_result}
+    descriptions = {d.name: d for d in description_list}
 
     if base_info is not None:
         # The register maps are each sorted internally, but need to be merged by address
@@ -1215,44 +1163,22 @@ def _extract_register_info(
             )
         )
 
-    return _ExtractedRegisterInfo(descriptions, reset_content)
+    if description_list:
+        # Use the child address range if there is at least one child
+        memory_builder.set_extent(offset=min_addresss, length=max_address - min_addresss)
 
+    memory_builder.set_default_value(base_reg_props.reset_value)
+    memory = memory_builder.build()
 
-def _expand_dimensioned_content(
-    content: List[Tuple[int, int]], dimensions: Dimensions
-) -> List[Tuple[int, int]]:
-    """Expand the given content along the given dimension."""
-
-    if dimensions.length <= 1:
-        return content
-
-    if len(content) == 1:
-        # Handling this case separately provides a substantial speed increase for large repetitive
-        # register arrays.
-        addr, value = content[0]
-        expanded_content = [(addr + offset, value) for offset in dimensions.to_range()]
-    else:
-        expanded_content: List[Tuple[int, int]] = list(content)
-        for offset in dimensions.to_range()[1:]:
-            expanded_content.extend(((addr + offset, value) for addr, value in content))
-
-    return expanded_content
-
-
-# TODO: use SVD endianness
-SIZE_TO_DTYPE = {
-    1: np.uint8,
-    2: np.dtype((np.dtype("<u2"), (np.uint8, 2))),
-    4: np.dtype((np.dtype("<u4"), (np.uint8, 4))),
-}
+    return _ExtractedRegisterInfo(descriptions, memory)
 
 
 def _extract_register_descriptions_helper(
-    reset_content: MemoryBlock,
+    memory: MemoryBlock.Builder,
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
-) -> List[_RegisterDescription]:
+) -> Tuple[List[_RegisterDescription], int, int]:
     """
     Helper that recursively extracts the names, addresses, register properties, dimensions,
     fields etc. of a collection of SVD register level elements.
@@ -1266,6 +1192,8 @@ def _extract_register_descriptions_helper(
              registers, used inside this function to sort registers while traversing.
     """
     total_result: List[_RegisterDescription] = []
+    min_address: int = 2**32
+    max_address: int = 0
 
     for element in elements:
         # Remove suffixes used for elements with dimensions
@@ -1290,14 +1218,12 @@ def _extract_register_descriptions_helper(
             if dim_props is None or dim_props.step == size_bytes:
                 length = dim_props.length if dim_props is not None else 1
                 address_end = address_start + size_bytes * length
-                dtype = SIZE_TO_DTYPE[size_bytes]
-
-                reset_content.array.mask[address_start:address_end] = False
-
-                content_dst = reset_content.array.data[address_start:address_end].view(
-                    dtype
+                memory.fill(
+                    start=address_start,
+                    end=address_end,
+                    value=reg_props.reset_value,
+                    elem_size=size_bytes,
                 )
-                content_dst[:] = reg_props.reset_value
 
             # Fill with gaps
             elif dim_props is not None and dim_props.step > size_bytes:
@@ -1321,8 +1247,12 @@ def _extract_register_descriptions_helper(
             else:
                 address_start = base_address
 
-            child_results = _extract_register_descriptions_helper(
-                reset_content=reset_content,
+            (
+                child_results,
+                child_min_address,
+                child_max_address,
+            ) = _extract_register_descriptions_helper(
+                memory=memory,
                 elements=element.registers,
                 base_reg_props=reg_props,
                 base_address=address_start,
@@ -1332,9 +1262,9 @@ def _extract_register_descriptions_helper(
                 registers = {d.name: d for d in child_results}
 
                 if address_offset is None:
-                    address_start = child_results[0].offset_start
+                    address_start = child_min_address
 
-                child_address_end = child_results[-1].offset_end
+                child_address_end = child_max_address
 
                 if dim_props is not None and dim_props.length > 1:
                     if dim_props.step < child_address_end - address_start:
@@ -1343,18 +1273,14 @@ def _extract_register_descriptions_helper(
 
                     offsets: Sequence[int] = dim_props.to_range()
                     address_end = address_start + offsets[-1] + dim_props.step
-
-                    # Duplicate content across the dimension
-                    for array in (reset_content.array.data, reset_content.array.mask):
-                        # TODO: describe this
-                        array_src = array[address_start : address_start + offsets[1]]
-                        array_dst = array[
-                            address_start + offsets[1] : address_end
-                        ].reshape((dim_props.length - 1, dim_props.step))
-                        array_dst[:] = array_src
+                    memory.tile(
+                        start=address_start,
+                        end=address_start + dim_props.step,
+                        times=dim_props.length,
+                    )
 
                 else:
-                    address_end = child_results[-1].offset_end
+                    address_end = child_max_address
 
             else:  # This is an empty struct
                 registers = {}
@@ -1372,12 +1298,14 @@ def _extract_register_descriptions_helper(
         )
 
         total_result.append(description)
+        min_address = min(min_address, address_start)
+        max_address = max(max_address, address_end)
 
     sorted_result = sorted(total_result, key=lambda r: r.offset_start)
 
     # Check that our structural assumptions hold.
     # (they don't lmao)
-    #if len(sorted_result) > 1:
+    # if len(sorted_result) > 1:
     #    for i in range(1, len(sorted_result)):
     #        r1 = sorted_result[i - 1]
     #        r2 = sorted_result[i]
@@ -1386,7 +1314,7 @@ def _extract_register_descriptions_helper(
     #                "overlapping structures"
     #            )  # FIXME: better error message
 
-    return sorted_result
+    return sorted_result, min_address, max_address
 
 
 def _extract_field_descriptions(

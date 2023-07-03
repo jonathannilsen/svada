@@ -29,7 +29,7 @@ def timer(svd_file, fields, flat):
 
     for peripheral in device.values():
         t_1 = perf_counter_ns()
-        peripheral._immutable_register_info
+        peripheral._register_info
         t_2 = perf_counter_ns()
         for register in peripheral.register_iter(flat=flat):
             if fields and register.fields is not None:
