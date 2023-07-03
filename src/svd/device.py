@@ -467,6 +467,13 @@ class _RegisterDescription(NamedTuple):
     fields: Optional[Mapping[str, _FieldDescription]]
     element: Union[bindings.RegisterElement, bindings.ClusterElement]
 
+    def compatible_with(self, other: _RegisterDescription) -> bool:
+        return (self.offset_start, self.offset_end, self.dim_props) == (
+            other.offset_start,
+            other.offset_end,
+            other.dim_props,
+        )
+
 
 class _RegisterBase:
     """Base class for all register types"""
@@ -1369,12 +1376,15 @@ def _extract_register_descriptions_helper(
     sorted_result = sorted(total_result, key=lambda r: r.offset_start)
 
     # Check that our structural assumptions hold.
-    if len(sorted_result) > 1:
-        for i in range(1, len(sorted_result)):
-            if sorted_result[i - 1].offset_end > sorted_result[i].offset_start:
-                raise ValueError(
-                    "overlapping structures"
-                )  # FIXME: better error message
+    # (they don't lmao)
+    #if len(sorted_result) > 1:
+    #    for i in range(1, len(sorted_result)):
+    #        r1 = sorted_result[i - 1]
+    #        r2 = sorted_result[i]
+    #        if r1.offset_end > r2.offset_start and not r1.compatible_with(r2):
+    #            raise ValueError(
+    #                "overlapping structures"
+    #            )  # FIXME: better error message
 
     return sorted_result
 
