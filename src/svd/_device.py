@@ -74,6 +74,7 @@ def topo_sort_derived_peripherals(
 
     return sorted_peripherals
 
+
 def svd_element_repr(
     klass: type,
     name: str,
@@ -217,6 +218,16 @@ class LSMCollection(ABC, Generic[K, T]):
             return key[0], key[1:]
         else:
             raise ValueError(f"Invalid key: {key}")
+
+
+def decode_path(key: Union[K, Sequence[Any]], this_type: Type) -> Tuple[K, Sequence[Any]]:
+    """Decode a key into a tuple of (initial key, remaining keys)."""
+    if isinstance(key, this_type):
+        return key, ()
+    elif isinstance(key, Sequence):
+        return key[0], key[1:]
+    else:
+        raise ValueError(f"Invalid register path: {key}")
 
 
 class LazyStaticMapping(LSMCollection[str, T], Mapping[str, T]):
