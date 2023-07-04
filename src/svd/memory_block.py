@@ -23,6 +23,7 @@ class MemoryBlock:
         """
         Builder that can be used to construct a MemoryBlock in several steps.
         """
+
         def __init__(self):
             self._base_block: Optional[MemoryBlock] = None
             self._offset: Optional[int] = None

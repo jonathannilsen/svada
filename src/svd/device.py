@@ -50,6 +50,39 @@ from . import util
 from .util import LazyStaticList, LazyStaticMapping
 
 
+class SvdPathError(IndexError, KeyError):
+    """Error raised when trying to access a nonexistent/invalid SVD path."""
+
+    def __init__(self, path: SPath, source: Any, explanation: str = "") -> None:
+        formatted_explanation = "" if not explanation else f" ({explanation})"
+        message = (
+            f"{source!s} does not contain an element '{path}'{formatted_explanation}"
+        )
+
+        super().__init__(message)
+
+
+class SvdTypeError(TypeError):
+    def __init__(self, source: RegisterType, explanation: str = "") -> None:
+        formatted_explanation = "" if not explanation else f" ({explanation})"
+        message = f"{source!s} is what????{formatted_explanation}"
+
+        super().__init__(message)
+
+
+class SvdFlatArrayError:
+    """Error raised when trying to access an element in a flat array"""
+
+    def __init__(self, path: SPath, source: RegisterType) -> None:
+        extra_info = "flat arrays do not have elements"
+
+        super.__init__(path, source, extra_info=extra_info)
+
+
+class SvdMemoryError(BufferError):
+    ...
+
+
 class Device(Mapping[str, "Peripheral"]):
     """
     Representation of a SVD device.
@@ -130,24 +163,21 @@ class Device(Mapping[str, "Peripheral"]):
         :return: Peripheral with the given name.
         """
         try:
-            return self._peripherals[name]
+            return self.peripherals[name]
         except LookupError as e:
-            raise KeyError(
-                f"{self.__class__.name} {self._qualified_name} does not contain a peripheral "
-                f"named '{name}'"
-            ) from e
+            raise SvdPathError(SPath(name), self, "peripheral not found") from e
 
     def __iter__(self) -> Iterator[str]:
         """
         :return: Iterator over the names of peripherals in the device.
         """
-        return iter(self._peripherals)
+        return iter(self.peripherals)
 
     def __len__(self) -> int:
         """
         :return: Number of peripherals in the device.
         """
-        return len(self._peripherals)
+        return len(self.peripherals)
 
     def __repr__(self) -> str:
         """Short description of the device."""
@@ -183,7 +213,8 @@ class Peripheral(Mapping[str, "RegisterType"]):
         self._reg_props: bindings.RegisterProperties = (
             self._peripheral.get_register_properties(base_props=base_reg_props)
         )
-        self._all_registers: Dict[SPath, RegisterType] = {}
+        self._flat_registers: Dict[SPath, RegisterType] = {}
+        self._dim_registers: Dict[SPath, RegisterType] = {}
 
     @property
     def name(self) -> str:
@@ -203,14 +234,11 @@ class Peripheral(Mapping[str, "RegisterType"]):
         }
 
     @cached_property
-    def registers(self) -> Mapping[str, Register]:
+    def registers(self) -> Mapping[str, RegisterType]:
         """Mapping of top-level registers in the peripheral, indexed by name."""
-        return {
-            name: _create_register_instance(
-                description=description, peripheral=self, path=SPath(name)
-            )
-            for name, description in self._register_descriptions.items()
-        }
+        return LazyStaticMapping(
+            keys=self._register_descriptions, factory=self.__getitem__
+        )
 
     def register_iter(
         self, flat: bool = False, leaf_only: bool = False
@@ -252,6 +280,110 @@ class Peripheral(Mapping[str, "RegisterType"]):
         """
         return self._register_info.memory
 
+    def _get_or_create_register(
+        self,
+        path: Union[int, str, SPath],
+        flat: bool = False,
+        relative_to: Optional[RegisterType] = None,
+    ) -> RegisterType:
+        """
+        :param relative_to: If provided, this points to the ancestor of the register
+        """
+
+        if relative_to is not None:
+            full_path = relative_to.path.join(path)
+        else:
+            assert isinstance(path, SPath)
+            full_path = path
+
+        storage = self._flat_registers if flat else self._dim_registers
+
+        try:
+            register = storage[full_path]
+        except KeyError:
+            if len(full_path) > 1:
+                if relative_to is None:
+                    # Build all the registers from the first available ancestor to the requested
+                    # register.
+                    search_path = path.parent
+                    while (
+                        relative_to := storage.get(search_path, None)
+                    ) is None and len(search_path) > 1:
+                        search_path = search_path.parent
+
+                    if relative_to is None:
+                        # We reached the top level
+                        relative_to = self._create_top_level_register(path, flat)
+
+                    # Create any registers on the path from the top level to the register
+                    for i in range(len(search_path) + 1, len(full_path)):
+                        relative_to = self._create_register(
+                            full_path[:i], flat, relative_to
+                        )
+
+                # Create the register itself
+                register = self._create_register(full_path, flat, relative_to)
+
+            else:
+                # Top-level register
+                register = self._create_top_level_register(full_path[0], flat)
+
+            storage[full_path] = register
+
+        return register
+
+    def _create_top_level_register(self, name: str, flat: bool) -> RegisterType:
+        """ """
+
+        try:
+            description = self._register_descriptions[name]
+        except KeyError as e:
+            raise SvdPathError(
+                SPath(name),
+                self,
+                explanation="expected the name of a top level register",
+            ) from e
+
+        reg_class = Struct if description.registers is not None else Register
+
+        return reg_class(
+            description=description, peripheral=self, path=SPath(name), flat=flat
+        )
+
+    def _create_register(
+        self, path: SPath, flat: bool, parent: RegisterType
+    ) -> RegisterType:
+        """ """
+        """
+        if not self.is_array():
+            raise SvdPathError(path, self)
+
+        if self.flat:
+            raise SvdFlatArrayError(path, self)
+        """
+
+        # FIXME: error checking in general
+        if not flat and parent.is_array() and not parent.path.is_array_element():
+            # FIXME: handle non-int
+            assert path.is_array_element()
+            reg_class = type(parent)
+            description = parent._description
+            instance_offset = (
+                parent._instance_offset + parent.dimensions.to_range()[path.index]
+            )
+        else:
+            description = parent._description.registers[path[-1]]
+            reg_class = Struct if description.registers is not None else Register
+            instance_offset = parent._instance_offset
+
+        return reg_class(
+            description=description,
+            peripheral=self,
+            path=path,
+            flat=flat,
+            instance_offset=instance_offset,
+        )
+
     @property
     def _register_descriptions(self) -> Mapping[str, _RegisterDescription]:
         """Mapping of register descriptions in the peripheral, indexed by name."""
@@ -274,7 +406,6 @@ class Peripheral(Mapping[str, "RegisterType"]):
             # register properties propagates down to the register elements.
             else:
                 base_info = _extract_register_info(
-                    self._base_peripheral.address_blocks,
                     self._base_peripheral._peripheral.registers,
                     self._reg_props,
                 )
@@ -293,12 +424,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
         :return: The instance of the specified register.
         """
-        try:
-            return self.registers[path]
-        except LookupError as e:
-            raise KeyError(
-                f"Peripheral {self} does not contain a register named '{path}'"
-            ) from e
+        return self._get_or_create_register(SPath(path))
 
     def __setitem__(self, name: str, value: int) -> None:
         """
@@ -325,51 +451,27 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
 
 def _register_iter(
-    registers: Iterable[_RegisterDescription],
-    flat: bool = False,
-    leaf_only: bool = False,
-) -> Iterator[Register]:
+    registers: Iterable[RegisterType],
+    flat: bool,
+    leaf_only: bool,
+) -> Iterator[RegisterType]:
     """ """
 
-    queue = deque(registers)
+    queue: deque[RegisterType] = deque(registers)
 
     while queue:
-        register = queue.pop()
-        path = register.path
-        dimensions = register.dimensions
-
-        is_leaf = register.registers is None and (
-            flat or (dimensions is None or path.is_array_element())
-        )
+        register: RegisterType = queue.pop()
+        is_leaf: bool = register.registers is None and (flat or not register.is_array())
 
         if not leaf_only or is_leaf:
             yield register
 
-        if (
-            not flat and dimensions is not None and not path.is_array_element()
-        ) or register.registers is not None:
-            # Expand dimensioned register
-            queue.extend(register.registers)
-
-
-def _create_register_instance(
-    description: _RegisterDescription, is_element: bool = False, **kwargs: Any
-) -> RegisterType:
-    """
-    Create a mutable register instance from a register description.
-
-    :param description: Register description
-    :param index: Index of the register in the parent register array, if applicable
-    :return: Register instance
-    """
-
-    is_array = description.dim_props is not None and not is_element
-    is_struct = description.registers is not None
-
-    if is_struct:
-        return Struct(description=description, **kwargs)
-    else:
-        return Register(description=description, **kwargs)
+        if not is_leaf:
+            queue.extend(
+                register.registers.values()
+                if register.registers is not None
+                else iter(register)
+            )
 
 
 class _RegisterDescription(NamedTuple):
@@ -421,6 +523,10 @@ class _RegisterBase(Sequence["RegisterType"]):
         self._path: SPath = path
         self._flat: bool = flat
         self._instance_offset: int = instance_offset
+
+    @property
+    def flat(self) -> bool:
+        return self._flat
 
     @property
     def name(self) -> str:
@@ -507,22 +613,9 @@ class _RegisterBase(Sequence["RegisterType"]):
 
         :return: The instance of the specified register.
         """
-        if not self.is_array():
-            raise TypeError(f"{self!s} is not an array")
-
-        if self._flat:
-            raise TypeError(f"{self!s} is a flat array and does not have elements")
-
-        this_key, remaining_keys = decode_path(path, this_type=int)
-        if this_key >= self.dimensions.length:
-            raise IndexError(
-                f"{self!s}: array index {this_key} is out of range"
-            )
-        this_register = self._peripheral._get_or_create_register()  # TODO
-        if remaining_keys:
-            return this_register[remaining_keys]
-        else:
-            return this_register
+        return self._peripheral._get_or_create_register(
+            path=path, flat=self.flat, relative_to=self
+        )
 
     def __setitem__(self, path: Union[int, Sequence[str, int]], content: int) -> None:
         """
@@ -531,26 +624,19 @@ class _RegisterBase(Sequence["RegisterType"]):
         """
         try:
             self[path].content = content
+        # FIXME
         except AttributeError as e:
             raise TypeError(f"{self[path]!s} does not have content") from e
 
     def __iter__(self) -> Iterator[RegisterType]:
-        if self.is_array():
-            if not self._flat:
-                for i in range(self.dimensions.length):
-                    yield self[i]
-            else:
-                raise TypeError(f"{self!s} is a flat array and does not have elements")
-        else:
-            raise TypeError(f"{self!s} is not an array")
+        for i in range(self.dimensions.length):
+            yield self[i]
 
+    # FIXME: should this raise an error for flat arrays?
     def __len__(self) -> int:
         """
         :return: Number of registers in the register array.
         """
-        if not self.is_array():
-            raise TypeError(f"{self!s} is not an array")
-
         return self.dimensions.length
 
     def __repr__(self) -> str:
@@ -561,11 +647,6 @@ class _RegisterBase(Sequence["RegisterType"]):
             address=self.offset,
             length=len(self) if self.is_array() else None,
         )
-
-    @property
-    def _path_with_peripheral(self) -> str:
-        """Full path of the register including the parent peripheral"""
-        return f"{self._peripheral.name}.{self.path}"
 
 
 class Struct(_RegisterBase, Mapping[str, "RegisterType"]):
@@ -587,55 +668,27 @@ class Struct(_RegisterBase, Mapping[str, "RegisterType"]):
 
     @property
     def registers(self) -> Mapping[str, RegisterType]:
-        if self._registers is None:
+        if self._registers is None and (self.flat or not self.is_array()):
             self._registers = LazyStaticMapping(
-                keys=self._description.registers.keys(),
-                factory=lambda name: _create_register_instance(
-                    description=self._description.registers[name],
-                    peripheral=self._peripheral,
-                    instance_offset=self._instance_offset,
-                    path=self.path.join(name),
-                ),
+                keys=iter(self), factory=self.__getitem__
             )
+
         return self._registers
-
-    def __getitem__(self, path: Union[str, int, Sequence[Union[str, int]]]) -> RegisterType:
-        """
-        :param name: Register name.
-
-        :return: Register with the given name.
-        """
-        if self.is_array() and not self.path.is_array_element():
-            return super().__getitem__(path)
-
-        this_key, remaining_keys = decode_path(path, this_type=str)
-        try:
-            description = self._description.registers.get(this_key)
-        except LookupError as e:
-            raise KeyError(
-                f"{self!s} does not contain a register named '{path}'"
-            ) from e
-
-        this_register = self._peripheral._get_or_create_register()  # TODO
-        if remaining_keys:
-            return this_register[remaining_keys]
-        else:
-            return this_register
 
     def __iter__(self) -> Iterator[str]:
         """
         :return: Iterator over the names of registers in the register structure.
         """
-        if self.is_array() and not self.path.is_array_element():
+        if self.is_array():
             return super().__iter__()
 
-        return iter(self._description.registers)
+        return iter(self._description.registers.keys())
 
     def __len__(self) -> int:
         """
         :return: Number of registers in the register structure
         """
-        if self.is_array() and not self.path.is_array_element():
+        if self.is_array():
             return super().__len__()
 
         return len(self._description.registers)
@@ -644,39 +697,28 @@ class Struct(_RegisterBase, Mapping[str, "RegisterType"]):
 class Register(_RegisterBase, Mapping[str, "Field"]):
     """
     Physical register instance containing a value.
-    Represents either a SVD register element without dimensions,
-    or a specific index of a register array.
+    Represents a SVD register element.
     """
 
     __slots__ = ["_fields"]
 
     def __init__(self, **kwargs):
         """
-        Initialize the class attribute(s).
         See parent class for a description of parameters.
         """
         super().__init__(**kwargs)
 
-        self._fields = LazyStaticMapping(
-            keys=self._description.fields.keys(),
-            factory=lambda name: Field(
-                description=self._description.fields[name], register=self
-            ),
-        )
+        self._fields: Optional[Mapping[str, Field]] = None
 
     @property
     def modified(self) -> bool:
         """True if the register contains a different value now than at reset."""
         return self.content != self.reset_content
 
-    # FIXME: size should be property?
-
     @property
     def content(self) -> int:
         """Current value of the register."""
-        content = self._peripheral._memory_block.at(
-            self.offset, self._description.reg_props.size // 8
-        )
+        content = self._peripheral._memory_block.at(self.offset, self.bit_width // 8)
         return int(content)
 
     @content.setter
@@ -688,19 +730,18 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         """
         self.set_content(new_content)
 
-    def set_content(self, new_content: int, mask: Optional[int] = None):
+    def set_content(self, new_content: int, mask: Optional[int] = None) -> None:
         """
         Set the value of the register.
 
         :param new_content: New value for the register.
         :param mask: Mask of the bits to copy from the given value. If None, all bits are copied.
         """
-        reg_size = self._description.reg_props.size
+        reg_width = self.bit_width
 
-        if new_content > 0 and math.ceil(math.log2(new_content)) > reg_size:
-            raise ValueError(
-                f"Value {hex(new_content)} is too large for {reg_size}-bit "
-                f"register {self.path}."
+        if new_content > 0 and math.ceil(math.log2(new_content)) > reg_width:
+            raise SvdMemoryError(
+                f"Value {hex(new_content)} is too large for {reg_width}-bit register {self.path}."
             )
 
         for field in self.values():
@@ -708,7 +749,7 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
             if mask is None or mask & field.mask:
                 field_content = field._extract_content_from_register(new_content)
                 if field_content not in field.allowed_values:
-                    raise ValueError(
+                    raise SvdMemoryError(
                         f"Value {hex(new_content)} is invalid for register {self.path}, as field "
                         f"{field.full_name} does not accept the value {hex(field_content)}."
                     )
@@ -720,12 +761,20 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
             new_content = new_content
 
         self._peripheral._memory_block.set_at(
-            self.offset, new_content, elem_size=reg_size // 8
+            self.offset, new_content, elem_size=reg_width // 8
         )
 
     @property
     def fields(self) -> Mapping[str, Field]:
         """Map of fields in the register, indexed by name"""
+        if self._fields is None:
+            self._fields = LazyStaticMapping(
+                keys=self._description.fields.keys(),
+                factory=lambda name: Field(
+                    description=self._description.fields[name], register=self
+                ),
+            )
+
         return MappingProxyType(self._fields)
 
     def unconstrain(self) -> None:
@@ -742,30 +791,21 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         :return: The instance of the specified field.
         """
 
-        if not self.is_array() or self.path.is_array_element():
+        if self.is_array():
             return super().__getitem__(path)
 
         try:
             return self._fields[path]
         except LookupError as e:
-            raise KeyError(
-                f"{self.__class__} {self._path_with_peripheral} "
-                f"does not define a field with name '{path}'"
+            raise SvdPathError(
+                path, self, explanation="no field matching the given path was found"
             ) from e
-
-    def __setitem__(self, key: str, value: Union[str, int]) -> None:
-        """
-        :param key: Either the bit offset of a field, or the field's name.
-        :param value: A raw numeric value, or a field enumeration, to write
-            to the selected register field.
-        """
-        self[key].content = value
 
     def __iter__(self) -> Iterator[str]:
         """
         :return: Iterator over the field names in the register.
         """
-        if not self.is_array() or self.path.is_array_element():
+        if self.is_array():
             return super().__iter__()
 
         return iter(self._fields)
@@ -775,7 +815,7 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
         :return: Number of fields in the register.
         """
 
-        if not self.is_array() or self.path.is_array_element():
+        if self.is_array():
             return super().__len__()
 
         return len(self._fields)
@@ -790,32 +830,6 @@ class Register(_RegisterBase, Mapping[str, "Field"]):
             content=self.content,
             bool_props=bool_props,
         )
-
-
-# Member type in a dimensioned register
-MT = TypeVar("MT")
-
-
-class _DimensionedRegister(_RegisterBase, Sequence[MT]):
-    """
-    Base class for register arrays.
-    """
-
-    __slots__ = ["_array_offsets", "_array_value"]
-
-    @property
-    def _array(self) -> Sequence[MT]:
-        if self._array_value is None:
-            self._array_value: Sequence[MT] = LazyStaticList(
-                length=len(self._array_offsets),
-                factory=lambda i: self.member_type(
-                    description=self._description,
-                    peripheral=self._peripheral,
-                    instance_offset=self._instance_offset + self._array_offsets[i],
-                    path=self.path.join(i),
-                ),
-            )
-        return self._array_value
 
 
 # Union of all register types
