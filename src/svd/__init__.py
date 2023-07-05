@@ -25,10 +25,15 @@ from .parsing import (
 )
 from .path import SPath
 from .device import (
+    Array,
+    Field,
+    FlatRegister,
+    FlatStruct,
+    FlatField,
     Device,
     Peripheral,
     Register,
-    Field,
+    Struct,
 )
 
 import importlib.metadata
