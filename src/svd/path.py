@@ -61,9 +61,9 @@ class SPath(Sequence[Union[str, int]]):
         return None
 
     @property
-    def parent(self) -> SPath:
+    def parent(self) -> Optional[SPath]:
         if len(self._parts) == 1:
-            return self
+            return None
         return SPath(*self._parts[:-1])
 
     @property
@@ -72,9 +72,6 @@ class SPath(Sequence[Union[str, int]]):
         if not isinstance(self[-1], int):
             return None
         return self[-1]
-
-    def is_array_element(self) -> bool:
-        return isinstance(self[-1], int)
 
     def join(self, *other: Union[SPath, str, int]) -> SPath:
         return SPath(*self.parts, *other)
@@ -112,6 +109,7 @@ class SPath(Sequence[Union[str, int]]):
 
         return "".join(formatted_parts)
 
+    # FIXME: this doesn't permit leading int, should it?
     def _parse_path_str(self, part: str) -> Iterable[Union[str, int]]:
         parsed_parts: List[Union[str, int]] = []
 
