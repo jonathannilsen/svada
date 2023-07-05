@@ -793,6 +793,14 @@ class FlatRegister(_Register):
 
 
 class Register(_Register):
+    def __setitem__(self, key: str, value: Union[str, int]) -> None:
+        """
+        :param key: Either the bit offset of a field, or the field's name.
+        :param value: A raw numeric value, or a field enumeration, to write
+            to the selected register field.
+        """
+        self[key].content = value
+
     @property
     def fields(self) -> Mapping[str, Field]:
         """Map of fields in the register, indexed by name"""
