@@ -17,6 +17,7 @@ from functools import cached_property
 from types import MappingProxyType
 from typing import (
     Any,
+    Callable,
     Collection,
     List,
     Tuple,
@@ -312,10 +313,9 @@ class Peripheral(Mapping[str, "RegisterType"]):
     @cached_property
     def _memory_block(self) -> MemoryBlock:
         """
-        Mutable mapping of the peripheral register contents in memory.
-        Intended for internal use only.
+        TODO
         """
-        return self._register_info.memory
+        return self._register_info.memory_builder.build()
 
     def _get_or_create_register(
         self,
@@ -435,13 +435,15 @@ class Peripheral(Mapping[str, "RegisterType"]):
         account registers derived from the base peripheral, if any.
         """
 
-        base_info: Optional[_ExtractedRegisterInfo] = None
+        base_descriptions: Optional[Mapping[str, _RegisterDescription]] = None
+        base_memory: Optional[Callable[[], MemoryBlock]] = None
 
         if self._base_peripheral is not None:
             # If the register properties are equal, then it is possible to reuse all the immutable
             # properties from the base peripheral.
             if self._base_peripheral._reg_props == self._reg_props:
-                base_info = self._base_peripheral._register_info
+                base_descriptions = self._base_peripheral._register_descriptions
+                base_memory = lambda: self._base_peripheral._memory_block
             # Otherwise, traverse the base registers again, because the difference in
             # register properties propagates down to the register elements.
             else:
@@ -449,11 +451,14 @@ class Peripheral(Mapping[str, "RegisterType"]):
                     self._base_peripheral._peripheral.registers,
                     self._reg_props,
                 )
+                base_descriptions = base_info.descriptions
+                base_memory = lambda: base_info.memory_builder.build()
 
         info = _extract_register_info(
             self._peripheral.registers,
             self._reg_props,
-            base_info=base_info,
+            base_descriptions=base_descriptions,
+            base_memory=base_memory,
         )
 
         return info
@@ -777,6 +782,15 @@ class FlatRegister(_Register):
 
         return MappingProxyType(self._fields)
 
+    def __repr__(self) -> str:
+        return svd_element_repr(
+            self.__class__,
+            self.path,
+            address=self.offset,
+            length=self.dimensions.length if self.dimensions is not None else None
+        )
+
+
 
 class Register(_Register):
     @property
@@ -852,6 +866,17 @@ class Register(_Register):
         """
         for field in self.values():
             field.unconstrain()
+
+    def __repr__(self) -> str:
+        bool_props = ("modified",) if self.modified else ()
+
+        return svd_element_repr(
+            self.__class__,
+            self.path,
+            address=self.offset,
+            content=self.content,
+            bool_props=bool_props,
+        )
 
 
 # Regular register types
@@ -1127,13 +1152,14 @@ class _ExtractedRegisterInfo(NamedTuple):
     """Container for register descriptions and reset values."""
 
     descriptions: Mapping[str, _RegisterDescription]
-    memory: MemoryBlock
+    memory_builder: MemoryBlock.Builder
 
 
 def _extract_register_info(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
-    base_info: Optional[_ExtractedRegisterInfo] = None,
+    base_descriptions: Optional[Mapping[str, _RegisterDescription]] = None,
+    base_memory: Optional[Callable[[], MemoryBlock]] = None,
 ) -> _ExtractedRegisterInfo:
     """
     Extract register descriptions for the given SVD register level elements.
@@ -1147,8 +1173,8 @@ def _extract_register_info(
     """
     memory_builder = MemoryBlock.Builder()
 
-    if base_info is not None:
-        memory_builder.copy_from(base_info.memory)
+    if base_memory is not None:
+        memory_builder.lazy_copy_from(base_memory)
 
     description_list, min_addresss, max_address = _extract_register_descriptions_helper(
         memory_builder, elements, base_reg_props
@@ -1156,13 +1182,13 @@ def _extract_register_info(
 
     descriptions = {d.name: d for d in description_list}
 
-    if base_info is not None:
+    if base_descriptions is not None:
         # The register maps are each sorted internally, but need to be merged by address
         # to ensure sorted order in the combined map
         descriptions = dict(
             util.iter_merged(
                 descriptions.items(),
-                base_info.descriptions.items(),
+                base_descriptions.items(),
                 key=lambda kv: kv[1].offset_start,
             )
         )
@@ -1174,9 +1200,8 @@ def _extract_register_info(
         )
 
     memory_builder.set_default_value(base_reg_props.reset_value)
-    memory = memory_builder.build()
 
-    return _ExtractedRegisterInfo(descriptions, memory)
+    return _ExtractedRegisterInfo(descriptions, memory_builder)
 
 
 def _extract_register_descriptions_helper(

@@ -25,18 +25,22 @@ class MemoryBlock:
         """
 
         def __init__(self):
-            self._base_block: Optional[MemoryBlock] = None
+            self._lazy_base_block: Optional[Callable[[], MemoryBlock]] = None
             self._offset: Optional[int] = None
             self._length: Optional[int] = None
             self._default_value: int = None
             self._ops: List[Callable[[MemoryBlock], None]] = []
 
         def build(self) -> MemoryBlock:
+            from_block: Optional[MemoryBlock] = (
+                self._lazy_base_block() if self._lazy_base_block is not None else None
+            )
+
             block = MemoryBlock(
                 default_value=self._default_value,
                 length=self._length,
                 offset=self._offset,
-                from_block=self._base_block,
+                from_block=from_block,
             )
 
             for op in self._ops:
@@ -44,8 +48,10 @@ class MemoryBlock:
 
             return block
 
-        def copy_from(self, block: MemoryBlock) -> MemoryBlock.Builder:
-            self._base_block = block
+        def lazy_copy_from(
+            self, lazy_block: Callable[[], MemoryBlock]
+        ) -> MemoryBlock.Builder:
+            self._lazy_base_block = lazy_block
             return self
 
         def set_extent(self, offset: int, length: int) -> MemoryBlock.Builder:
