@@ -543,7 +543,6 @@ class _RegisterNode:
     @property
     def offset(self) -> int:
         """Address offset of the register, relative to the peripheral it is contained in"""
-        # FIXME: should only use the instance offset in non-flat classes
         return self._description.offset_start + self._instance_offset
 
     # FIXME: remove these?
@@ -794,6 +793,11 @@ class FlatRegister(_Register):
 
 
 class Register(_Register):
+    @property
+    def offset_range(self) -> range:
+        """Range of addresses covered by the register."""
+        return range(self.offset, self.offset + self.bit_width // 8)
+
     def __setitem__(self, key: str, value: Union[str, int]) -> None:
         """
         :param key: Either the bit offset of a field, or the field's name.
