@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Dict, Callable, List, Optional, Tuple, Type, Union
+from typing import Dict, Callable, Iterator, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import numpy.ma as ma
@@ -64,7 +64,7 @@ class MemoryBlock:
             return self
 
         def fill(
-            self, start: int, end: int, value: int, elem_size: int = 1
+            self, start: int, end: int, value: int, item_size: int = 1
         ) -> MemoryBlock.Builder:
             """Fill the memory block range [start, end) with a value"""
             if start < end:
@@ -74,7 +74,7 @@ class MemoryBlock:
                         start=start,
                         end=end,
                         value=value,
-                        elem_size=elem_size,
+                        item_size=item_size,
                     )
                 )
             return self
@@ -114,6 +114,7 @@ class MemoryBlock:
 
             dst_start = from_block.offset - offset if offset is not None else 0
             dst_end = dst_start + from_block.length
+            self._array.mask[dst_start:dst_end] &= from_block.array.mask
             np.copyto(dst=self._array[dst_start:dst_end], src=from_block.array)
 
         else:
@@ -125,12 +126,12 @@ class MemoryBlock:
             address_mask = np.ones_like(length, dtype=bool)
             self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
 
-    def at(self, idx: Union[int, slice], elem_size: int = 4):
-        translated_idx, dtype = self._translate_access(idx, elem_size)
+    def at(self, idx: Union[int, slice], item_size: int = 4):
+        translated_idx, dtype = self._translate_access(idx, item_size)
         return self.array.data.view(dtype=dtype)[translated_idx]
 
-    def set_at(self, idx: Union[int, slice], value, elem_size: int = 4):
-        translated_idx, dtype = self._translate_access(idx, elem_size)
+    def set_at(self, idx: Union[int, slice], value, item_size: int = 4):
+        translated_idx, dtype = self._translate_access(idx, item_size)
         self.array.data.view(dtype=dtype)[translated_idx] = value
 
     def __getitem__(self, idx: Union[int, slice]):
@@ -139,11 +140,18 @@ class MemoryBlock:
     def __setitem__(self, idx: Union[int, slice], value):
         self.set_at(idx, value)
 
-    def as_dict(elem_size: int = 4) -> Dict[int, int]:
-        dtype = SIZE_TO_DTYPE[elem_size]
-        return {}
-        np.arange()
-        # TODO
+    def memory_iter(
+        self, item_size: int = 4, with_offset: int = 0
+    ) -> Iterator[Tuple[int, int]]:
+        dtype = SIZE_TO_DTYPE[item_size]
+        inverse_mask = ~self.array.mask
+        address_start = self._offset + with_offset
+        addresses = np.linspace(
+            address_start, address_start + self._length, num=self._length, dtype=int
+        )[inverse_mask][::item_size]
+        values = self.array.compressed().view(dtype)
+        for address, value in zip(addresses, values):
+            yield address, value
 
     @property
     def offset(self) -> int:
@@ -161,21 +169,21 @@ class MemoryBlock:
         return len(self.array)
 
     def _translate_access(
-        self, idx: Union[int, slice], elem_size: int
+        self, idx: Union[int, slice], item_size: int
     ) -> Tuple[Union[int, slice], Type[np.dtype]]:
-        dtype = SIZE_TO_DTYPE[elem_size]
+        dtype = SIZE_TO_DTYPE[item_size]
 
         if isinstance(idx, int):
-            translated_idx = (idx - self._offset) // elem_size
+            translated_idx = (idx - self._offset) // item_size
         elif isinstance(idx, slice):
             translated_idx = slice(
-                (idx.start - self._offset) // elem_size
+                (idx.start - self._offset) // item_size
                 if idx.start is not None
                 else None,
-                (idx.stop - self._offset) // elem_size
+                (idx.stop - self._offset) // item_size
                 if idx.stop is not None
                 else None,
-                (idx.step // elem_size) if idx.step else None,
+                (idx.step // item_size) if idx.step else None,
             )
         else:
             raise ValueError(f"Unsupported index: {idx}")
@@ -196,8 +204,8 @@ class MemoryBlock:
             )
             array_dst[:] = array_src
 
-    def _fill(self, /, *, start: int, end: int, value: int, elem_size: int) -> None:
-        dtype = SIZE_TO_DTYPE[elem_size]
+    def _fill(self, /, *, start: int, end: int, value: int, item_size: int) -> None:
+        dtype = SIZE_TO_DTYPE[item_size]
         offset_start = start - self.offset
         offset_end = end - self.offset
         self.array.mask[offset_start:offset_end] = False

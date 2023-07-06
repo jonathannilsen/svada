@@ -271,14 +271,15 @@ class Peripheral(Mapping[str, "RegisterType"]):
             if not is_leaf:
                 stack.extend(register.get_children(reverse=True))
 
-    def get_content(
+    def memory_iter(
         self,
-        absolute_addresses: bool = False,
         item_size: int = 1,
-        byte_order: str = "little",
-    ) -> Dict[int, int]:
+        # byte_order: str = "little",
+        absolute_addresses: bool = False,
+    ) -> Iterator[Tuple[int, int]]:
         """Memory map of the peripheral register contents."""
-        return self._memory_block.as_dict()
+        address_offset = self.base_address if absolute_addresses else 0
+        yield from self._memory_block.memory_iter(item_size, with_offset=address_offset)
 
     def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> Register:
         """
@@ -865,7 +866,7 @@ class Register(_Register):
             new_content = new_content
 
         self._peripheral._memory_block.set_at(
-            self.offset, new_content, elem_size=reg_width // 8
+            self.offset, new_content, item_size=reg_width // 8
         )
 
     def unconstrain(self) -> None:
@@ -1262,7 +1263,7 @@ def _extract_register_descriptions_helper(
                     start=address_start,
                     end=address_end,
                     value=reg_props.reset_value,
-                    elem_size=size_bytes,
+                    item_size=size_bytes,
                 )
 
             # Fill with gaps
@@ -1271,7 +1272,7 @@ def _extract_register_descriptions_helper(
                     start=address_start,
                     end=address_start + size_bytes,
                     value=reg_props.reset_value,
-                    elem_size=size_bytes,
+                    item_size=size_bytes,
                 )
                 memory.tile(
                     start=address_start,
