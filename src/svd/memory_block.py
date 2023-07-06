@@ -151,7 +151,7 @@ class MemoryBlock:
         )[inverse_mask][::item_size]
         values = self.array.compressed().view(dtype)
         for address, value in zip(addresses, values):
-            yield address, value
+            yield int(address), int(value)
 
     @property
     def offset(self) -> int:
