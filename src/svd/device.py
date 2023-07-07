@@ -202,19 +202,32 @@ class Peripheral(Mapping[str, "RegisterType"]):
     def __init__(
         self,
         element: bindings.PeripheralElement,
-        device: Device,
+        device: Optional[Device],
         base_reg_props: bindings.RegisterProperties,
         base_peripheral: Optional[Peripheral] = None,
+        new_base_address: Optional[int] = None,
     ):
         self._peripheral: bindings.PeripheralElement = element
-        self._device: Device = device
+        self._device: Optional[Device] = device
         self._base_peripheral: Optional[Peripheral] = base_peripheral
-        self._base_address: int = element.base_address
+        self._base_address: int = (
+            element.base_address if new_base_address is None else new_base_address
+        )
         self._reg_props: bindings.RegisterProperties = (
             self._peripheral.get_register_properties(base_props=base_reg_props)
         )
         self._flat_registers: Dict[SPath, RegisterType] = {}
         self._dim_registers: Dict[SPath, RegisterType] = {}
+
+    def copy_empty_to(self, new_base_address: int) -> Peripheral:
+        """Copy the peripheral to a new base address."""
+        return Peripheral(
+            element=self._peripheral,
+            device=None,
+            base_reg_props=self._reg_props,
+            base_peripheral=self,
+            new_base_address=new_base_address,
+        )
 
     @property
     def name(self) -> str:
@@ -274,7 +287,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
     def memory_iter(
         self,
         item_size: int = 1,
-        # byte_order: str = "little",
+        native_byteorder: bool = False,
         absolute_addresses: bool = False,
     ) -> Iterator[Tuple[int, int]]:
         """Memory map of the peripheral register contents."""
@@ -787,9 +800,8 @@ class FlatRegister(_Register):
             self.__class__,
             self.path,
             address=self.offset,
-            length=self.dimensions.length if self.dimensions is not None else None
+            length=self.dimensions.length if self.dimensions is not None else None,
         )
-
 
 
 class Register(_Register):
