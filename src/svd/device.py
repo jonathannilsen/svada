@@ -806,6 +806,10 @@ class FlatRegister(_Register):
 
 class Register(_Register):
     @property
+    def address_range(self) -> range:
+        return range(self.address, self.address + self.bit_width // 8)
+
+    @property
     def offset_range(self) -> range:
         """Range of addresses covered by the register."""
         return range(self.offset, self.offset + self.bit_width // 8)
