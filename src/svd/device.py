@@ -96,7 +96,7 @@ class Options:
     ignore_structural_errors: bool = False
     parent_relative_cluster_address: bool = False
     # A map of {peripheral name: [register path...]} to delete from the device.
-    remove_registers: Mapping[NamePredicate, Sequence[SPath]] = dc.field(
+    remove_registers: Mapping[NamePredicate, Sequence[Union[str, SPath]]] = dc.field(
         default_factory=lambda: defaultdict(list)
     )
 
@@ -125,6 +125,9 @@ def _delete_registers(
             continue
 
         for path in paths:
+            if isinstance(path, str):
+                path = SPath(path)
+
             element_path = path_to_element_path(path)
             registers = peripheral_element._registers
             nodes = registers.findall(element_path)
