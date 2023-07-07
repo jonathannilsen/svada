@@ -118,7 +118,7 @@ def _delete_registers(
         return False
 
     def path_to_element_path(path: SPath) -> str:
-        return "/".join((f"[@name='{p}'" for p in path))
+        return "/".join((f"[@name='{p}']" for p in path))
 
     for predicate, paths in remove.items():
         if not predicate_matches(predicate, peripheral_element):
