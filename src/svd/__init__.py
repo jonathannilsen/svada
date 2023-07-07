@@ -31,6 +31,7 @@ from .device import (
     FlatStruct,
     FlatField,
     Device,
+    Options,
     Peripheral,
     Register,
     Struct,
