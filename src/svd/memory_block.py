@@ -143,11 +143,14 @@ class MemoryBlock:
     def memory_iter(
         self, item_size: int = 4, with_offset: int = 0
     ) -> Iterator[Tuple[int, int]]:
+        if self._length % item_size != 0:
+            raise ValueError(f"Memory block length {self._length} is not divisible by {item_size}")
+
         dtype = SIZE_TO_DTYPE[item_size]
         inverse_mask = ~self.array.mask
         address_start = self._offset + with_offset
         addresses = np.linspace(
-            address_start, address_start + self._length, num=self._length, dtype=int
+            address_start, address_start + self._length, num=self._length, endpoint=False, dtype=int
         )[inverse_mask][::item_size]
         values = self.array.compressed().view(dtype)
         for address, value in zip(addresses, values):
