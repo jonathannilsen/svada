@@ -12,7 +12,11 @@ but instead focuses on certain key features of the device description.
 
 from __future__ import annotations
 
+import dataclasses as dc
 import math
+import re
+from collections import defaultdict
+from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
 from typing import (
@@ -84,12 +88,58 @@ class SvdMemoryError(BufferError):
     ...
 
 
+NamePredicate = Union[str, re.Pattern]
+
+
+@dataclass(frozen=True)
+class Options:
+    ignore_structural_errors: bool = False
+    parent_relative_cluster_address: bool = False
+    # A map of {peripheral name: [register path...]} to delete from the device.
+    remove_registers: Mapping[NamePredicate, Sequence[SPath]] = dc.field(
+        default_factory=lambda: defaultdict(list)
+    )
+
+    def __post_init__(self):
+        ...
+
+
+def _delete_registers(
+    peripheral_element: bindings.PeripheralElement,
+    remove: Mapping[NamePredicate, Sequence[SPath]],
+):
+    def predicate_matches(
+        predicate: NamePredicate, peripheral: bindings.PeripheralElement
+    ) -> bool:
+        if isinstance(predicate, re.Pattern):
+            return re.fullmatch(predicate, peripheral_element.name) is not None
+        elif isinstance(predicate, str):
+            return peripheral.name == predicate
+        return False
+
+    def path_to_element_path(path: SPath) -> str:
+        return "/".join((f"[@name='{p}'" for p in path))
+
+    for predicate, paths in remove.items():
+        if not predicate_matches(predicate, peripheral_element):
+            continue
+
+        for path in paths:
+            element_path = path_to_element_path(path)
+            registers = peripheral_element._registers
+            nodes = registers.findall(element_path)
+            for node in nodes:
+                registers.remove(node)
+
+
 class Device(Mapping[str, "Peripheral"]):
     """
     Representation of a SVD device.
     """
 
-    def __init__(self, device: bindings.DeviceElement):
+    def __init__(
+        self, device: bindings.DeviceElement, options: Optional[Options] = None
+    ):
         self._device: bindings.DeviceElement = device
         self._reg_props: RegisterProperties = self._device.register_properties
 
@@ -107,6 +157,9 @@ class Device(Mapping[str, "Peripheral"]):
                 base_peripheral = peripherals_unsorted[peripheral_element.derived_from]
             else:
                 base_peripheral = None
+
+            if options is not None and options.remove_registers:
+                _delete_registers(peripheral_element, options.remove_registers)
 
             peripheral = Peripheral(
                 peripheral_element,

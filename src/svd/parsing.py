@@ -14,15 +14,10 @@ import lxml.etree as ET
 from lxml import objectify
 
 from . import bindings
-from .device import Device
+from .device import Device, Options
 
 
-class SvdParseException(RuntimeError):
-    """Exception raised when an error occurs during SVD parsing."""
-    ...
-
-
-def parse(svd_path: Union[str, Path]) -> Device:
+def parse(svd_path: Union[str, Path], options: Optional[Options] = None) -> Device:
     """
     Parse a device described by a SVD file.
 
@@ -48,12 +43,18 @@ def parse(svd_path: Union[str, Path]) -> Device:
         with open(svd_file, "r") as f:
             xml_device = objectify.parse(f, parser=xml_parser)
 
-        device = Device(xml_device.getroot())
+        device = Device(xml_device.getroot(), options=Options)
 
     except Exception as e:
         raise SvdParseException(f"Error parsing SVD file {svd_file}") from e
 
     return device
+
+
+class SvdParseException(RuntimeError):
+    """Exception raised when an error occurs during SVD parsing."""
+
+    ...
 
 
 class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):
