@@ -43,7 +43,7 @@ def parse(svd_path: Union[str, Path], options: Optional[Options] = None) -> Devi
         with open(svd_file, "r") as f:
             xml_device = objectify.parse(f, parser=xml_parser)
 
-        device = Device(xml_device.getroot(), options=Options)
+        device = Device(xml_device.getroot(), options=options)
 
     except Exception as e:
         raise SvdParseException(f"Error parsing SVD file {svd_file}") from e

@@ -100,8 +100,8 @@ class Options:
         default_factory=lambda: defaultdict(list)
     )
 
-    def __post_init__(self):
-        ...
+    #def __post_init__(self):
+    #    ...
 
 
 def _delete_registers(
@@ -125,7 +125,7 @@ def _delete_registers(
             continue
 
         for path in paths:
-            if isinstance(path, str):
+            if not isinstance(path, SPath):
                 path = SPath(path)
 
             element_path = path_to_element_path(path)
