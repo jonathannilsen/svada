@@ -10,6 +10,7 @@ Various internal functionality used by the device module.
 
 from __future__ import annotations
 
+import re
 from abc import ABC
 from collections import defaultdict
 from types import MappingProxyType
@@ -24,6 +25,7 @@ from typing import (
     List,
     Mapping,
     Optional,
+    Reversible,
     Sequence,
     Tuple,
     Type,
@@ -32,6 +34,7 @@ from typing import (
 )
 
 from . import bindings
+from .path import SPath
 
 
 def topo_sort_derived_peripherals(
@@ -75,6 +78,32 @@ def topo_sort_derived_peripherals(
     return sorted_peripherals
 
 
+def remove_registers(
+    peripheral_element: bindings.PeripheralElement,
+    remove: Mapping[str, Sequence[str]],
+):
+    """
+    Remove clusters/registers from a peripheral by deleting the nodes from the XML tree itself.
+
+    :param peripheral_element: Peripheral node to filter registers from.
+    :param remove: 
+    """
+    registers = peripheral_element._registers
+    if registers is None:
+        # Skip if the node has no <registers> node (permitted on derived peripherals)
+        return
+
+    for pattern_str, paths in remove.items():
+        if re.fullmatch(pattern_str, peripheral_element.name) is None:
+            continue
+
+        for path in paths:
+            xpath = "." + "".join((f"/*[name='{p}']" for p in path.split(".")))
+            nodes = registers.xpath(xpath)
+            for node in nodes:
+                registers.remove(node)
+
+
 def svd_element_repr(
     klass: type,
     name: str,
@@ -93,12 +122,13 @@ def svd_element_repr(
     :param klass: Class of the element.
     :param name: Name of the element.
     :param address: Address of the element.
+    :param length: Address of the element.
     :param content: Length of the element.
-    :param width: Available width of the element, used to zero-pad the value.
-    :param value: Value of the element.
-    :param kwargs: Additional keyword arguments to include in the pretty print.
+    :param content_max_width: Available width of the element, used to zero-pad the value.
+    :param bool_props: Additional arguments to include in the pretty print.
+    :param kv_props: Additional keyword arguments to include in the pretty print.
 
-    :return: Pretty printed string.
+    :return: Pretty printed string representing the element.
     """
 
     address_str: str = f" @ 0x{address:08x}" if address is not None else ""
@@ -142,6 +172,22 @@ def strip_suffix(word: str, suffix: str) -> str:
         word = word[: -len(suffix)]
 
     return word
+
+
+CT = TypeVar("CT")
+
+class ChildIter(Reversible[CT]):
+    def __init__(self, keys: Reversible, getter):
+        self._keys = keys
+        self._getter = getter
+
+    def __iter__(self) -> Iterator[CT]:
+        for k in self._keys:
+            yield self._getter(k)
+
+    def __reversed__(self) -> Iterator[CT]:
+        for k in reversed(self._keys):
+            yield self._getter(k)
 
 
 K = TypeVar("K")
@@ -220,7 +266,9 @@ class LSMCollection(ABC, Generic[K, T]):
             raise ValueError(f"Invalid key: {key}")
 
 
-def decode_path(key: Union[K, Sequence[Any]], this_type: Type) -> Tuple[K, Sequence[Any]]:
+def decode_path(
+    key: Union[K, Sequence[Any]], this_type: Type
+) -> Tuple[K, Sequence[Any]]:
     """Decode a key into a tuple of (initial key, remaining keys)."""
     if isinstance(key, this_type):
         return key, ()

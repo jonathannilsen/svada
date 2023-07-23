@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Iterator, NamedTuple, Optional, Sequence, Union
+from typing import Iterator, NamedTuple, Optional, Protocol, Sequence, Union
 
 from lxml import objectify
 from lxml.objectify import BoolElement, StringElement
@@ -756,7 +756,7 @@ class RegisterElement(
     data_type: Optional[DataType] = elem("dataType", DataTypeElement, default=None)
 
     # Side effect of writing the register.
-    modified_write_values: Optional[WriteAction] = elem(
+    modified_write_values: WriteAction = elem(
         "modifiedWriteValues", ModifiedWriteValuesElement, default=WriteAction.MODIFY
     )
 

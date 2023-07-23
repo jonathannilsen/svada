@@ -134,6 +134,7 @@ class LSMCollection(ABC, Generic[K, T]):
         else:
             raise ValueError(f"Invalid key: {key}")
 
+# FIXME: rename, consider refactor
 
 class LazyStaticMapping(LSMCollection[str, T], Mapping[str, T]):
     """

@@ -24,11 +24,11 @@ class MemoryBlock:
         Builder that can be used to construct a MemoryBlock in several steps.
         """
 
-        def __init__(self):
+        def __init__(self) -> None:
             self._lazy_base_block: Optional[Callable[[], MemoryBlock]] = None
             self._offset: Optional[int] = None
             self._length: Optional[int] = None
-            self._default_value: int = None
+            self._default_value: Optional[int] = None
             self._ops: List[Callable[[MemoryBlock], None]] = []
 
         def build(self) -> MemoryBlock:
