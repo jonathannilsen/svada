@@ -19,9 +19,11 @@ from .bindings import (
     AddressBlock,
     SauRegion,
 )
+from .errors import (
+    SvdParseError,
+)
 from .parsing import (
     parse,
-    SvdParseException,
 )
 from .path import SPath
 from .device import (

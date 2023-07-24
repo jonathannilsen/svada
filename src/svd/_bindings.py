@@ -276,7 +276,7 @@ def make_enum_wrapper(
 
     class EnumWrapper(objectify.ObjectifiedDataElement):
         @property
-        def pyval(self):
+        def pyval(self) -> CaseInsensitiveStrEnum:
             return enum_cls.from_str(self.text)
 
     return EnumWrapper

@@ -15,6 +15,7 @@ from lxml import objectify
 
 from . import bindings
 from .device import Device, Options
+from .errors import SvdParseError
 
 
 def parse(svd_path: Union[str, Path], options: Optional[Options] = None) -> Device:
@@ -24,7 +25,7 @@ def parse(svd_path: Union[str, Path], options: Optional[Options] = None) -> Devi
     :param svd_path: Path to the SVD file.
 
     :raises FileNotFoundError: If the SVD file does not exist.
-    :raises SvdParseException: If an error occurred while parsing the SVD file.
+    :raises SvdParseError: If an error occurred while parsing the SVD file.
 
     :return: Parsed `Device` representation of the SVD file.
     """
@@ -46,15 +47,9 @@ def parse(svd_path: Union[str, Path], options: Optional[Options] = None) -> Devi
         device = Device(xml_device.getroot(), options=options)
 
     except Exception as e:
-        raise SvdParseException(f"Error parsing SVD file {svd_file}") from e
+        raise SvdParseError(f"Error parsing SVD file {svd_file}") from e
 
     return device
-
-
-class SvdParseException(RuntimeError):
-    """Exception raised when an error occurs during SVD parsing."""
-
-    ...
 
 
 class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):

@@ -81,12 +81,12 @@ def topo_sort_derived_peripherals(
 def remove_registers(
     peripheral_element: bindings.PeripheralElement,
     remove: Mapping[str, Sequence[str]],
-):
+) -> None:
     """
     Remove clusters/registers from a peripheral by deleting the nodes from the XML tree itself.
 
     :param peripheral_element: Peripheral node to filter registers from.
-    :param remove: 
+    :param remove:
     """
     registers = peripheral_element._registers
     if registers is None:
@@ -176,8 +176,11 @@ def strip_suffix(word: str, suffix: str) -> str:
 
 CT = TypeVar("CT")
 
+
 class ChildIter(Reversible[CT]):
-    def __init__(self, keys: Reversible, getter):
+    """Helper class used as a generic reversible iterator"""
+
+    def __init__(self, keys: Reversible, getter: Callable[[Any], CT]) -> None:
         self._keys = keys
         self._getter = getter
 
@@ -190,138 +193,51 @@ class ChildIter(Reversible[CT]):
             yield self._getter(k)
 
 
-K = TypeVar("K")
 T = TypeVar("T")
 
 
-class LSMCollection(ABC, Generic[K, T]):
+class LazyStaticMapping(Mapping[str, T]):
     """
-    Generic collection data structure used to implement the collection operations
-    we suppport in the SVD device structure.
+    A mapping that lazily constructs its values.
+    The set of keys is fixed at construction time - this ensures consistent ordering during
+    iteration.
     """
 
     def __init__(
-        self,
-        *,
-        key_type: Type[K],
-        storage: Collection[T],
-        factory: Callable[[K], T],
-        **kwargs,
-    ):
-        self._key_type: Type[K] = key_type
-        self._storage: Dict[str, Optional[T]] = storage
-        self._factory = factory
-
-        super().__init__(**kwargs)
-
-    def __getitem__(self, key: Union[K, Sequence[Any]]) -> Union[T, Any]:
-        """
-        Get an item from the collection.
-
-        If the item is requested for the first time, it is first constructed using
-        the factory function.
-
-        The key parameter may either be a single key or a sequence of keys.
-        In the single key case, e.g.
-            my_collection["key"],
-        the item with key "key" is looked up in this instance.
-        A sequence of keys can be used to get elements deeper in the hierarchy.
-        If given e.g.
-            my_collection["key1", "key2", "key3"],
-        the element at
-            my_collection["key1"]["key2"]["key3"]
-        is returned.
-
-        :param key: Singular key or sequence of keys identifying the item.
-        :return:
-        """
-        this_key, remaining_keys = self.decode_key(key)
-
-        value = self._storage[this_key]
-        if value is None:
-            value = self._factory(this_key)
-            self._storage[this_key] = value
-
-        if remaining_keys:
-            return value[remaining_keys]
-        else:
-            return value
-
-    def __contains__(self, key: K) -> bool:
-        return key in self._storage
-
-    def __len__(self) -> int:
-        return len(self._storage)
-
-    def recursive_iter():
-        ...
-
-    def decode_key(self, key: Union[K, Sequence[Any]]) -> Tuple[K, Sequence[Any]]:
-        """Decode a key into a tuple of (initial key, remaining keys)."""
-        if isinstance(key, self._key_type):
-            return key, ()
-        elif isinstance(key, Sequence):
-            return key[0], key[1:]
-        else:
-            raise ValueError(f"Invalid key: {key}")
-
-
-def decode_path(
-    key: Union[K, Sequence[Any]], this_type: Type
-) -> Tuple[K, Sequence[Any]]:
-    """Decode a key into a tuple of (initial key, remaining keys)."""
-    if isinstance(key, this_type):
-        return key, ()
-    elif isinstance(key, Sequence):
-        return key[0], key[1:]
-    else:
-        raise ValueError(f"Invalid register path: {key}")
-
-
-class LazyStaticMapping(LSMCollection[str, T], Mapping[str, T]):
-    """
-    A mapping that lazily constructs its values.
-    The set of keys is fixed at construction time.
-    """
-
-    def __init__(self, keys: Iterable[str], factory: Callable[[str], T], **kwargs):
+        self, keys: Iterable[str], factory: Callable[[str], T], **kwargs: Any
+    ) -> None:
         """
         :param keys: Keys contained in the mapping.
         :param factory: Factory function which is called to initialize
                         new elements.
         """
-        super().__init__(
-            key_type=str, storage={key: None for key in keys}, factory=factory, **kwargs
-        )
+        self._storage: Dict[str, Optional[T]] = {key: None for key in keys}
+        self._factory = factory
+
+        super().__init__(**kwargs)
+
+    def __getitem__(self, key: str) -> T:
+        value = self._storage[key]
+        if value is None:
+            value = self._factory(key)
+            self._storage[key] = value
+
+        return value
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._storage)
 
+    def __contains__(self, key: Any) -> bool:
+        return key in self._storage
 
-class LazyStaticList(LSMCollection[int, T], Sequence[T]):
-    """
-    A list that lazily constructs its values.
-    The length of the list is fixed at construction time.
-    """
-
-    def __init__(self, length: int, factory: Callable[[int], T], **kwargs):
-        """
-        :param length: Length of the list.
-        :param factory: Factory function which is called to initialize
-                        new elements.
-        """
-        super().__init__(
-            key_type=int,
-            storage=[None for _ in range(length)],
-            factory=factory,
-            **kwargs,
-        )
+    def __len__(self) -> int:
+        return len(self._storage)
 
 
 def iter_merged(a: Iterable[T], b: Iterable[T], key: Callable[[T], Any]) -> Iterator[T]:
     """
     Iterator that merges two sorted iterables.
-    It is implicitly assumed that both iterables are sorted - passing unsorted iterables will not
+    It is assumed that both iterables are sorted - passing unsorted iterables will not
     cause an error.
     """
 

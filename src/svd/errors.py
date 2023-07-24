@@ -1,45 +1,55 @@
+#
+# Copyright (c) 2023 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: Apache-2.0
+#
 
-from typing import Any
+from abc import ABC
+from typing import Any, Union
 
 from .path import AnySPath, SPath, SPathType
 
 
-class SvdTypeError(TypeError):
-    def __init__(self, source: Any, explanation: str = "") -> None:
-        formatted_explanation = "" if not explanation else f" ({explanation})"
-        message = f"{source!s} is what????{formatted_explanation}"
+class SvdError(Exception):
+    """Base class for errors raised by the library"""
 
-        super().__init__(message)
+    ...
 
 
-class SvdFlatArrayError:
-    """Error raised when trying to access an element in a flat array"""
+class SvdParseError(SvdError):
+    """Raised when an error occurs during SVD parsing."""
 
-    def __init__(self, path: SPath, source: Any) -> None:
-        extra_info = "flat arrays do not have elements"
+    ...
 
-        super.__init__(path, source, extra_info=extra_info)
+
+class SvdDefinitionError(ValueError):
+    """Raised when unrecoverable errors occur due to an invalid definition in the SVD file"""
+
+    def __init__(self, binding: Any, explanation: str):
+        super().__init__(f"Invalid SVD file elements ({binding}): {explanation}")
 
 
 class SvdMemoryError(BufferError):
     ...
 
 
-class SvdIndexError(IndexError):
-    ...
 
+class SvdPathError(SvdError):
+    """Raised when trying to access a nonexistent/invalid SVD path."""
 
-class SvdKeyError(KeyError):
-    ...
-
-
-class SvdPathError(IndexError, KeyError):
-    """Error raised when trying to access a nonexistent/invalid SVD path."""
-
-    def __init__(self, path: AnySPath, source: Any, explanation: str = "") -> None:
+    def __init__(self, path: Union[str, AnySPath], source: Any, explanation: str = "") -> None:
         formatted_explanation = "" if not explanation else f" ({explanation})"
         message = (
             f"{source!s} does not contain an element '{path}'{formatted_explanation}"
         )
 
         super().__init__(message)
+
+
+class SvdIndexError(SvdPathError, IndexError):
+    ...
+
+
+class SvdKeyError(SvdPathError, KeyError):
+    ...
+
