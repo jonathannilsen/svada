@@ -122,6 +122,8 @@ class FSPath(AbstractSPath[str]):
         """Get an XPath expression that can be used to locate elements having this path"""
         return "." + "".join((f"/*[name='{p}']" for p in self.parts))
 
+    def __repr__(self) -> str:
+        return ".".join(self.parts)
 
 class SPath(AbstractSPath[Union[str, int]]):
     """Path to a SVD element"""
@@ -247,6 +249,9 @@ class SPath(AbstractSPath[Union[str, int]]):
                     formatted_parts.append(f".{part}")
 
         return "".join(formatted_parts)
+
+
+AnySPath = Union[SPath, FSPath]
 
 
 SPathType = TypeVar("SPathType", SPath, FSPath)

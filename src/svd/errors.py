@@ -1,7 +1,7 @@
 
 from typing import Any
 
-from .path import SPath
+from .path import AnySPath, SPath, SPathType
 
 
 class SvdTypeError(TypeError):
@@ -36,7 +36,7 @@ class SvdKeyError(KeyError):
 class SvdPathError(IndexError, KeyError):
     """Error raised when trying to access a nonexistent/invalid SVD path."""
 
-    def __init__(self, path: SPath, source: Any, explanation: str = "") -> None:
+    def __init__(self, path: AnySPath, source: Any, explanation: str = "") -> None:
         formatted_explanation = "" if not explanation else f" ({explanation})"
         message = (
             f"{source!s} does not contain an element '{path}'{formatted_explanation}"

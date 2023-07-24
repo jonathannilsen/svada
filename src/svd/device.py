@@ -21,7 +21,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, singledispatchmethod
 from types import MappingProxyType
 from typing import (
     Any,
@@ -36,6 +36,7 @@ from typing import (
     Iterator,
     Mapping,
     NamedTuple,
+    NoReturn,
     Optional,
     Reversible,
     Sequence,
@@ -267,17 +268,26 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
     @cached_property
     def registers(self) -> Mapping[str, RegisterType]:
-        """
-        Mapping of top-level registers in the peripheral, indexed by name.
-        The registers contained in the mapping are not flat.
-        """
+        """Mapping of top-level registers in the peripheral, indexed by name."""
         return LazyStaticMapping(
             keys=self._register_descriptions.keys(), factory=self.__getitem__
         )
 
-    def register_iter(
-        self, flat: bool = False, leaf_only: bool = False
-    ) -> Iterator[RegisterType]:
+    def register_iter(self, leaf_only: bool = False) -> Iterator[RegisterType]:
+        return self._register_iter(SPath, leaf_only)
+
+    @cached_property
+    def flat_registers(self) -> Mapping[str, FlatRegisterType]:
+        """ """
+        return LazyStaticMapping(
+            keys=self._register_descriptions.keys(),
+            factory=lambda n: self._get_or_create_register(FSPath(n)),
+        )
+
+    def flat_register_iter(self, leaf_only: bool = False) -> Iterator[FlatRegisterType]:
+        return self._register_iter(FSPath, leaf_only)
+
+    def _register_iter(self, path_cls: Type, leaf_only: bool = False) -> Iterator:
         """
         Iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
@@ -287,8 +297,7 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
         :return: Iterator over the registers in the peripheral.
         """
-        path_cls: Union[Type[FSPath], Type[SPath]] = FSPath if flat else SPath
-        stack: List[RegisterType] = [
+        stack = [
             self._get_or_create_register(path_cls(name))
             for name in reversed(self._register_descriptions.keys())
         ]
@@ -348,10 +357,19 @@ class Peripheral(Mapping[str, "RegisterType"]):
         """
         return len(self.registers)
 
-    def _get_or_create_register(
-        self,
-        path: Union[SPath, FSPath],
-    ) -> RegisterType:
+    @singledispatchmethod
+    def _get_or_create_register(self, path: Any) -> Any:
+        raise ValueError(f"Invalid path {path}")
+
+    @_get_or_create_register.register
+    def _(self, path: SPath) -> RegisterType:
+        ...
+
+    @_get_or_create_register.register
+    def _(self, path: FSPath) -> FlatRegisterType:
+        ...
+
+    def _do_get_or_create_register(self, storage: Mapping[SPathType, RegisterClass], path: SPathType) -> RegisterClass:
         """
         Common method for accessing a register contained in the peripheral.
         If the register is accessed for the first time, it is first initialized.
@@ -398,9 +416,19 @@ class Peripheral(Mapping[str, "RegisterType"]):
 
         return register
 
+    @overload
     def _create_register(
-        self, path: Union[SPath, FSPath], parent: Optional[RegisterType] = None
+        self, path: SPath, parent: Optional[RegisterType]
     ) -> RegisterType:
+        ...
+
+    @overload
+    def _create_register(
+        self, path: FSPath, parent: Optional[FlatRegisterType]
+    ) -> FlatRegisterType:
+        ...
+
+    def _create_register(self, path: Union[SPath, FSPath], parent=None):
         """
         Create a register instance
         """
@@ -510,6 +538,8 @@ class Peripheral(Mapping[str, "RegisterType"]):
         """Short peripheral description."""
         return svd_element_repr(self.__class__, self.name, address=self.base_address)
 
+RegisterClass = TypeVar("RegisterClass", "RegisterType", "FlatRegisterType")
+
 
 def _register_set_content(container, path: Union[int, str], content: int) -> None:
     """Common function for setting the content of a register."""
@@ -558,7 +588,7 @@ class _RegisterSpec(NamedTuple):
         return self.fields is not None
 
 
-class _RegisterNode(ABC):
+class _RegisterNode(ABC, Generic[SPathType]):
     """Base class for all register types"""
 
     __slots__ = [
@@ -572,7 +602,7 @@ class _RegisterNode(ABC):
         self,
         description: _RegisterSpec,
         peripheral: Peripheral,
-        path: SPath,
+        path: SPathType,
         instance_offset: int = 0,
     ):
         """
@@ -583,7 +613,7 @@ class _RegisterNode(ABC):
         """
         self._description: _RegisterSpec = description
         self._peripheral: Peripheral = peripheral
-        self._path: SPath = path
+        self._path: SPathType = path
         self._instance_offset: int = instance_offset
 
     @property
@@ -592,7 +622,7 @@ class _RegisterNode(ABC):
         return self.path.name
 
     @property
-    def path(self) -> SPath:
+    def path(self) -> SPathType:
         """Full path to the register."""
         return self._path
 
@@ -612,7 +642,7 @@ class _RegisterNode(ABC):
         ...
 
 
-class Array(_RegisterNode, Sequence["RegisterType"]):
+class Array(_RegisterNode[SPath], Sequence["RegisterType"]):
     """Container of Structs and Registers"""
 
     @overload
@@ -628,12 +658,10 @@ class Array(_RegisterNode, Sequence["RegisterType"]):
         ...
 
     def __getitem__(self, path, /):
-        """
-        
-        """
+        """ """
         if isinstance(path, slice):
             return [self[i] for i in range(*path.indices(len(self)))]
-        
+
         return self._peripheral._get_or_create_register(self.path.join(path))
 
     def __setitem__(self, path: int, content: int, /) -> None:
@@ -658,7 +686,7 @@ class Array(_RegisterNode, Sequence["RegisterType"]):
         return False
 
     def child_iter(self) -> Reversible[RegisterType]:
-        return ChildIter(range(len(self)), lambda i: self.__getitem__)
+        return ChildIter(range(len(self)), self.__getitem__)
 
     def __repr__(self) -> str:
         """Short register description."""
@@ -667,7 +695,7 @@ class Array(_RegisterNode, Sequence["RegisterType"]):
         )
 
 
-class _Struct(_RegisterNode, Mapping[str, R]):
+class _Struct(_RegisterNode, Mapping[str, "RegisterType"]):
     """
     Register structure representing a group of registers.
     Represents either a SVD cluster element without dimensions,
@@ -718,17 +746,14 @@ class _Struct(_RegisterNode, Mapping[str, R]):
         return len(self._description.registers)
 
     def child_iter(self) -> Reversible[RegisterType]:
-        return ChildIter(
-            self._description.registers.keys(),
-            lambda n: self._peripheral._get_or_create_register(self.path.join(n)),
-        )
+        return ChildIter(self._description.registers.keys(), self.__getitem__)
 
     def __repr__(self) -> str:
         """Short register description."""
         return svd_element_repr(self.__class__, self.path, address=self.offset)
 
 
-class FlatStruct(_Struct[FlatRegisterType]):
+class FlatStruct(_Struct):
     @property
     def dimensions(self) -> Optional[Dimensions]:
         """Dimensions of the register, if any."""
@@ -765,7 +790,7 @@ class _Register(_RegisterNode, Mapping[str, F]):
         """
         super().__init__(**kwargs)
 
-        self._fields: Optional[Mapping[str, Field]] = None
+        self._fields: Optional[Mapping[str, F]] = None
 
     @property
     def leaf(self) -> bool:
@@ -809,9 +834,7 @@ class _Register(_RegisterNode, Mapping[str, F]):
         if self._fields is None:
             self._fields = LazyStaticMapping(
                 keys=self._description.fields.keys(),
-                factory=lambda name: FlatField(
-                    description=self._description.fields[name], register=self
-                ),
+                factory=self._create_field,
             )
 
         return MappingProxyType(self._fields)
@@ -841,12 +864,19 @@ class _Register(_RegisterNode, Mapping[str, F]):
         """
         return len(self.fields)
 
+    @abstractmethod
+    def _create_field(self, name: str) -> F:
+        ...
 
-class FlatRegister(_Register[FlatField]):
+
+class FlatRegister(_Register["FlatField"]):
     @property
     def dimensions(self) -> Optional[Dimensions]:
         """Dimensions of the register, if any."""
         return self._description.dimensions
+
+    def _create_field(self, name: str) -> FlatField:
+        return FlatField(description=self._description.fields[name], register=self)
 
     def __repr__(self) -> str:
         return svd_element_repr(
@@ -857,7 +887,7 @@ class FlatRegister(_Register[FlatField]):
         )
 
 
-class Register(_Register[Field]):
+class Register(_Register["Field"]):
     @property
     def leaf(self) -> bool:
         return True
@@ -940,6 +970,9 @@ class Register(_Register[Field]):
         for field in self.values():
             field.unconstrain()
 
+    def _create_field(self, name: str) -> Field:
+        return Field(description=self._description.fields[name], register=self)
+
     def __repr__(self) -> str:
         bool_props = ("modified",) if self.modified else ()
 
@@ -1002,6 +1035,7 @@ class _FieldSpec(NamedTuple):
 
 
 R = TypeVar("R", Register, FlatRegister)
+
 
 class _Field(Generic[R]):
     """
@@ -1110,7 +1144,12 @@ class _Field(Generic[R]):
 
 
 class FlatField(_Field):
-    ...
+    def __repr__(self):
+        return svd_element_repr(
+            self.__class__,
+            self.path,
+            content_max_width=self.bit_width,
+        )
 
 
 class Field(_Field):
@@ -1166,8 +1205,6 @@ class Field(_Field):
         the field will accept any value that can fit inside its bit width.
         """
         self._allowed_values = range(2**self.bit_width)
-
-    
 
     def _trailing_zero_adjusted(self, content: int) -> int:
         """
