@@ -59,9 +59,12 @@ from .bindings import (
 )
 from ._device import (
     ChildIter,
+    LazyFixedMapping,
     remove_registers,
     topo_sort_derived_peripherals,
     svd_element_repr,
+    iter_merged,
+    strip_suffix,
 )
 from .errors import (
     SvdIndexError,
@@ -72,8 +75,6 @@ from .errors import (
 )
 from .memory_block import MemoryBlock
 from .path import SPath, FSPath, SPathType
-from . import util
-from .util import LazyStaticList, LazyStaticMapping
 
 
 @dataclass(frozen=True)
@@ -281,17 +282,28 @@ class Peripheral(Mapping[str, RegisterUnion]):
     @cached_property
     def registers(self) -> Mapping[str, RegisterUnion]:
         """Mapping of top-level registers in the peripheral, indexed by name."""
-        return LazyStaticMapping(
+        return LazyFixedMapping(
             keys=self._register_descriptions.keys(), factory=self.__getitem__
         )
 
     def register_iter(self, leaf_only: bool = False) -> Iterator[RegisterUnion]:
+        """
+        Iterator over the registers in the peripheral in pre-order.
+        Registers are ordered by increasing offset/address.
+
+        :param flat: Do not yield individual registers in register arrays.
+        :param leaf_only: Only yield registers at the bottom of the register tree.
+        :return: Iterator over the registers in the peripheral.
+        """
         return self._register_iter(SPath, leaf_only)
 
     @cached_property
     def flat_registers(self) -> Mapping[str, FlatRegisterUnion]:
-        """ """
-        return LazyStaticMapping(
+        """
+        Mapping of top-level flat registers in the peripheral, indexed by name.
+        The
+        """
+        return LazyFixedMapping(
             keys=self._register_descriptions.keys(),
             factory=lambda n: self._get_or_create_register(FSPath(n)),
         )
@@ -299,18 +311,18 @@ class Peripheral(Mapping[str, RegisterUnion]):
     def flat_register_iter(
         self, leaf_only: bool = False
     ) -> Iterator[FlatRegisterUnion]:
-        return self._register_iter(FSPath, leaf_only)
-
-    def _register_iter(self, path_cls: Type, leaf_only: bool = False) -> Iterator:
         """
         Iterator over the registers in the peripheral in pre-order.
         Registers are ordered by increasing offset/address.
 
         :param flat: Do not yield individual registers in register arrays.
         :param leaf_only: Only yield registers at the bottom of the register tree.
-
         :return: Iterator over the registers in the peripheral.
         """
+        return self._register_iter(FSPath, leaf_only)
+
+    def _register_iter(self, path_cls: Type, leaf_only: bool = False) -> Iterator:
+        """Commmon register iteration implementation."""
         stack = [
             self._get_or_create_register(path_cls(name))
             for name in reversed(self._register_descriptions.keys())
@@ -337,7 +349,6 @@ class Peripheral(Mapping[str, RegisterUnion]):
         :param item_size: Byte granularity of the iterator.
         :param absolute_addresses: If True, use absolute instead of peripheral relative addresses.
         :param native_byteorder: If true, use native byte order instead of device byte order.
-
         :return: Iterator over the peripheral register contents.
         """
         # TODO: actually use byteorder
@@ -360,11 +371,11 @@ class Peripheral(Mapping[str, RegisterUnion]):
 
     def __iter__(self) -> Iterator[str]:
         """:return: Iterator over the names of top-level registers in the peripheral."""
-        return iter(self.registers)
+        return iter(self._register_descriptions)
 
     def __len__(self) -> int:
         """:return: Number of top-level registers in the peripheral."""
-        return len(self.registers)
+        return len(self._register_descriptions)
 
     @singledispatchmethod
     def _get_or_create_register(self, path: Any) -> Any:
@@ -376,7 +387,6 @@ class Peripheral(Mapping[str, RegisterUnion]):
         ancestors of the register are also initialized if needed.
 
         :param path: Path to the register.
-
         :return: The register instance at the given path.
         """
         raise ValueError(f"Invalid path {path}")
@@ -489,7 +499,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
 
             instance_offset = 0
 
-        elif isinstance(parent, Struct):
+        elif isinstance(parent, FlatStruct):
             try:
                 description = parent._description.registers[path.stem]
             except KeyError as e:
@@ -736,7 +746,7 @@ class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
     def registers(self) -> Mapping[str, RegisterClass]:
         """:return A mapping of registers in the structure, ordered by ascending address."""
         if self._registers is None:
-            self._registers = LazyStaticMapping(
+            self._registers = LazyFixedMapping(
                 keys=iter(self), factory=self.__getitem__
             )
 
@@ -844,7 +854,7 @@ class _Register(_RegisterNode, Mapping[str, FieldClass]):
     def fields(self) -> Mapping[str, FieldClass]:
         """Map of fields in the register, indexed by name"""
         if self._fields is None:
-            self._fields = LazyStaticMapping(
+            self._fields = LazyFixedMapping(
                 keys=self._description.fields.keys(),
                 factory=self._create_field,
             )
@@ -1146,7 +1156,7 @@ class _Field(Generic[FieldParent]):
 
 
 class FlatField(_Field):
-    """ """
+    """SVD field"""
 
     def __repr__(self) -> str:
         """Short field description."""
@@ -1158,6 +1168,8 @@ class FlatField(_Field):
 
 
 class Field(_Field):
+    """SVD field"""
+
     @property
     def content(self) -> int:
         """The value of the field."""
@@ -1271,8 +1283,9 @@ def _extract_register_info(
     Each level of the structure is internally sorted by ascending address.
 
     :param elements: Register level elements to process.
-    :param base_reg_props: Register properties inherited from the parent peripheral.
-
+    :param base_reg_props: Register properties of the peripheral.
+    :param base_descriptions: Register descriptions inherited from the base peripheral, if any.
+    :param base_memory: Memory inherited from the base peripheral, if any.
     :return: Map of register descriptions, indexed by name.
     """
     memory_builder = MemoryBlock.Builder()
@@ -1290,7 +1303,7 @@ def _extract_register_info(
         # The register maps are each sorted internally, but need to be merged by address
         # to ensure sorted order in the combined map
         descriptions = dict(
-            util.iter_merged(
+            iter_merged(
                 descriptions.items(),
                 base_descriptions.items(),
                 key=lambda kv: kv[1].offset_start,
@@ -1303,7 +1316,7 @@ def _extract_register_info(
             offset=min_addresss, length=max_address - min_addresss
         )
 
-    memory_builder.set_default_value(base_reg_props.reset_value)
+    memory_builder.set_default_content(base_reg_props.reset_value)
 
     return _ExtractedRegisterInfo(descriptions, memory_builder)
 
@@ -1339,7 +1352,7 @@ def _extract_register_descriptions_helper(
 
     for element in elements:
         # Remove suffixes used for elements with dimensions
-        name = util.strip_suffix(element.name, "[%s]")
+        name = strip_suffix(element.name, "[%s]")
         reg_props = element.get_register_properties(base_props=base_reg_props)
         dim_props = element.dimensions
         address_offset = element.offset
@@ -1363,7 +1376,7 @@ def _extract_register_descriptions_helper(
                 memory.fill(
                     start=address_start,
                     end=address_end,
-                    value=reg_props.reset_value,
+                    content=reg_props.reset_value,
                     item_size=size_bytes,
                 )
 
@@ -1372,7 +1385,7 @@ def _extract_register_descriptions_helper(
                 memory.fill(
                     start=address_start,
                     end=address_start + size_bytes,
-                    value=reg_props.reset_value,
+                    content=reg_props.reset_value,
                     item_size=size_bytes,
                 )
                 memory.tile(
@@ -1385,7 +1398,7 @@ def _extract_register_descriptions_helper(
                 raise SvdDefinitionError(
                     element,
                     f"step of 0x{dim_props.step:x} is less than the size of the "
-                    f"array (0x{size_bytes})"
+                    f"array (0x{size_bytes})",
                 )
 
             fields = _extract_field_descriptions(element.fields)

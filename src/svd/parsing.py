@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 import lxml.etree as ET
 from lxml import objectify
@@ -113,14 +113,16 @@ class _SecondLevelTagLookup(ET.PythonElementClassLookup):
 
     def __init__(
         self,
-        lookup_table: Dict[Tuple[Optional[str], str], objectify.ObjectifiedElement],
+        lookup_table: Dict[Tuple[Optional[str], str], Type[objectify.ObjectifiedElement]],
     ):
         """
         :param lookup_table: Lookup table mapping a tuple of (parent tag, tag) to an element class.
         """
         self._lookup_table = lookup_table
 
-    def lookup(self, _document, element: ET._Element):
+    def lookup(
+        self, _document: Any, element: ET._Element
+    ) -> Optional[Type[objectify.ObjectifiedElement]]:
         """Look up the Element class for the given XML element"""
         if (parent := element.getparent()) is not None:
             parent_tag = parent.tag

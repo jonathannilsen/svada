@@ -30,3 +30,6 @@ build-backend = "setuptools.build_meta"
 package-dir = { svd = "src/svd" }
 
 [tool.setuptools_scm]
+
+[tool.mypy]
+disallow_untyped_defs = true

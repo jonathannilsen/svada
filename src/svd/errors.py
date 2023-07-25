@@ -7,7 +7,7 @@
 from abc import ABC
 from typing import Any, Union
 
-from .path import AnySPath, SPath, SPathType
+from .path import SPathUnion, SPath, SPathType
 
 
 class SvdError(Exception):
@@ -37,7 +37,7 @@ class SvdMemoryError(BufferError):
 class SvdPathError(SvdError):
     """Raised when trying to access a nonexistent/invalid SVD path."""
 
-    def __init__(self, path: Union[str, AnySPath], source: Any, explanation: str = "") -> None:
+    def __init__(self, path: Union[str, SPathUnion], source: Any, explanation: str = "") -> None:
         formatted_explanation = "" if not explanation else f" ({explanation})"
         message = (
             f"{source!s} does not contain an element '{path}'{formatted_explanation}"

@@ -12,11 +12,20 @@ from __future__ import annotations
 
 import enum
 import inspect
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Type, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from lxml import objectify
-
-from .util import CaseInsensitiveStrEnum
 
 
 class CaseInsensitiveStrEnum(enum.Enum):
@@ -75,7 +84,7 @@ class SvdIntElement(objectify.IntElement):
     This class uses a custom parser to convert the value to an integer.
     """
 
-    def _init(self):
+    def _init(self) -> None:
         self._setValueParser(to_int)
 
 
@@ -130,7 +139,9 @@ class elem:
         self.default: Union[Any, MISSING] = default
         self.default_factory: Union[Callable[[], Any], MISSING] = default_factory
 
-    def __get__(self, node: Optional[objectify.ObjectifiedElement], owner: Any = None):
+    def __get__(
+        self, node: Optional[objectify.ObjectifiedElement], owner: Any = None
+    ) -> Any:
         """Get the element value from the given node."""
 
         # If the node argument is None, we are being accessed through the class object.
@@ -185,7 +196,9 @@ class attr:
         self.default: Union[Any, MISSING] = default
         self.default_factory: Union[Callable[[], Any], MISSING] = default_factory
 
-    def __get__(self, node: Optional[objectify.ObjectifiedElement], _owner: Any = None):
+    def __get__(
+        self, node: Optional[objectify.ObjectifiedElement], _owner: Any = None
+    ) -> Any:
         """Get the attribute value from the given node."""
 
         # If the node argument is None, we are being accessed through the class object.
@@ -227,10 +240,8 @@ class BindingRegistry:
     ) -> Type[C]:
         """
         Add a class to the binding registry.
-
         This is intended to be used as a class decorator.
         """
-
         elem_props: Dict[str, elem] = getattr(klass, "_xml_elem_props", {})
         attr_props: Dict[str, attr] = getattr(klass, "_xml_attr_props", {})
 
@@ -257,8 +268,8 @@ class BindingRegistry:
 
 
 def get_binding_elem_props(
-    klass: type,
-) -> Mapping[str, Union[attr, elem]]:
+    klass: Type[objectify.ObjectifiedElement],
+) -> Mapping[str, elem]:
     """Get the XML element properties of a binding class."""
     try:
         return klass._xml_elem_props

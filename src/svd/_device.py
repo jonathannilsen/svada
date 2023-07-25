@@ -54,7 +54,7 @@ def topo_sort_derived_peripherals(
     dep_graph: Dict[str, List[bindings.PeripheralElement]] = defaultdict(list)
 
     for peripheral in peripherals:
-        if peripheral.is_derived:
+        if peripheral.derived_from is not None:
             dep_graph[peripheral.derived_from].append(peripheral)
         else:
             no_dep_peripherals.append(peripheral)
@@ -133,12 +133,13 @@ def svd_element_repr(
 
     address_str: str = f" @ 0x{address:08x}" if address is not None else ""
     length_str: str = f"<{length}>" if length is not None else ""
+    value_str: str
 
     if content is not None:
         leading_zeros: str = "0" * ((content_max_width - content.bit_length()) // 4)
-        value_str: str = f" = 0x{leading_zeros}{content:x}"
+        value_str = f" = 0x{leading_zeros}{content:x}"
     else:
-        value_str: str = ""
+        value_str = ""
 
     if bool_props or kv_props:
         bool_props_str: str = (
@@ -174,29 +175,26 @@ def strip_suffix(word: str, suffix: str) -> str:
     return word
 
 
-CT = TypeVar("CT")
+T = TypeVar("T")
 
 
-class ChildIter(Reversible[CT]):
+class ChildIter(Reversible[T]):
     """Helper class used as a generic reversible iterator"""
 
-    def __init__(self, keys: Reversible, getter: Callable[[Any], CT]) -> None:
+    def __init__(self, keys: Reversible, getter: Callable[[Any], T]) -> None:
         self._keys = keys
         self._getter = getter
 
-    def __iter__(self) -> Iterator[CT]:
+    def __iter__(self) -> Iterator[T]:
         for k in self._keys:
             yield self._getter(k)
 
-    def __reversed__(self) -> Iterator[CT]:
+    def __reversed__(self) -> Iterator[T]:
         for k in reversed(self._keys):
             yield self._getter(k)
 
 
-T = TypeVar("T")
-
-
-class LazyStaticMapping(Mapping[str, T]):
+class LazyFixedMapping(Mapping[str, T]):
     """
     A mapping that lazily constructs its values.
     The set of keys is fixed at construction time - this ensures consistent ordering during

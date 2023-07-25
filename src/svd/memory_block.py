@@ -7,23 +7,45 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Dict, Callable, Iterator, List, Optional, Tuple, Type, Union
+from typing import (
+    Any,
+    Dict,
+    Callable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    overload,
+)
 from typing_extensions import Self
 
 import numpy as np
 import numpy.ma as ma
+from numpy.typing import ArrayLike
+
+from .errors import SvdMemoryError
 
 
-SIZE_TO_DTYPE = {
+SIZE_TO_DTYPE: Mapping[int, np.dtype] = {
     1: np.uint8,
     2: np.dtype((np.dtype("<u2"), (np.uint8, 2))),
     4: np.dtype((np.dtype("<u4"), (np.uint8, 4))),
 }
 
 
+def _get_dtype_for_size(item_size: int) -> np.dtype:
+    try:
+        return SIZE_TO_DTYPE[item_size]
+    except KeyError:
+        raise SvdMemoryError(f"Unsupported item size: {item_size}")
+
+
 class MemoryBlock:
     """
-    A block of memory.
+    A contiguous memory region at a given (offset, length).
     """
 
     class Builder:
@@ -35,16 +57,25 @@ class MemoryBlock:
             self._lazy_base_block: Optional[Callable[[], MemoryBlock]] = None
             self._offset: Optional[int] = None
             self._length: Optional[int] = None
-            self._default_value: Optional[int] = None
+            self._default_content: Optional[int] = None
+            self._default_item_size: Optional[int] = None
             self._ops: List[Callable[[MemoryBlock], None]] = []
 
         def build(self) -> MemoryBlock:
+            """
+            Build the memory block based on the parameters set.
+
+            :return: The built memory block.
+            """
+            if self._default_content is None or self._default_item_size is None:
+                raise ValueError("Missing ")
+
             from_block: Optional[MemoryBlock] = (
                 self._lazy_base_block() if self._lazy_base_block is not None else None
             )
 
             block = MemoryBlock(
-                default_value=self._default_value,
+                default_content=self._default_content,
                 length=self._length,
                 offset=self._offset,
                 from_block=from_block,
@@ -56,34 +87,75 @@ class MemoryBlock:
             return block
 
         def lazy_copy_from(self, lazy_block: Callable[[], MemoryBlock]) -> Self:
+            """
+            Use a different memory block as the base for this memory block.
+            The lazy_block should be a callable that can be called in build() to get the base
+            block.
+
+            :param lazy_block: Callable that returns the base block.
+            :return: The builder instance.
+            """
             self._lazy_base_block = lazy_block
             return self
 
         def set_extent(self, offset: int, length: int) -> Self:
+            """
+            Set the offset and length of the memory block.
+            This is required unless lazy_copy_from() is used.
+
+            :param offset: Starting offset of the memory block.
+            :param length: Length of the memory block, starting at the given offset.
+            :return: The builder instance.
+            """
             self._offset = offset
             self._length = length
             return self
 
-        def set_default_value(self, default_value: int) -> Self:
-            self._default_value = default_value
+        def set_default_content(self, default_content: int, item_size: int = 4) -> Self:
+            """
+            Set the default content (initial value) of the memory block.
+            This is required.
+
+            :param default_content: Default value.
+            :param item_size: Size in bytes of default_content.
+            :return: The builder instance.
+            """
+            self._default_content = default_content
+            self._default_item_size = item_size
             return self
 
-        def fill(self, start: int, end: int, value: int, item_size: int = 1) -> Self:
-            """Fill the memory block range [start, end) with a value"""
+        def fill(self, start: int, end: int, content: int, item_size: int = 4) -> Self:
+            """
+            Fill the memory block address range [start, end) with a value.
+
+            :param start: Start offset of the range to be filled.
+            :param end: Exclusive end offset of the range to be filled.
+            :param content: Value to fill with.
+            :param item_size: Size in bytes of content.
+            :return: The builder instance.
+            """
             if start < end:
                 self._ops.append(
                     partial(
                         MemoryBlock._fill,
                         start=start,
                         end=end,
-                        value=value,
+                        value=content,
                         item_size=item_size,
                     )
                 )
             return self
 
         def tile(self, start: int, end: int, times: int) -> Self:
-            """Duplicate the values at range [start, end) a number of times."""
+            """
+            Duplicate the values at the memory block address range [start, end) a number of times.
+            The range is duplicated at the *times* positions following the range.
+
+            :param start: Start offset of the range to be duplicated.
+            :param end: Exclusive end offset of the range to be duplicated.
+            :param times: Number of times to duplicate the range.
+            :return: The builder instance.
+            """
             if times > 1 and start < end:
                 self._ops.append(
                     partial(MemoryBlock._tile, start=start, end=end, times=times)
@@ -92,13 +164,22 @@ class MemoryBlock:
 
     def __init__(
         self,
-        default_value: int,
+        default_content: int,
+        default_item_size: int = 4,
         offset: Optional[int] = None,
         length: Optional[int] = None,
         from_block: Optional[MemoryBlock] = None,
-    ):
+    ) -> None:
+        """
+        :param default_content:
+        :param offset: Starting offset of the memory block. Required unless from_block is passed.
+        :param length: Length in bytes of the memory block. Required unless from_block is passed.
+        :param from_block: Memory block to use as the base for this memory block.
+        """
         self._offset: int
         self._length: int
+
+        default_dtype = SIZE_TO_DTYPE[default_item_size]
 
         if from_block is not None:
             if offset is not None:
@@ -114,9 +195,13 @@ class MemoryBlock:
             else:
                 self._length = from_block._length
 
-            data = numpy_full(self._length, default_value, dtype=np.uint8)
+            data = _numpy_full(
+                self._length // default_item_size, default_content, dtype=default_dtype
+            ).view(np.uint8)
             address_mask = np.ones_like(data, dtype=bool)
-            self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
+            self._array: ma.MaskedArray = ma.MaskedArray(
+                data=data, mask=address_mask, dtype=np.uint8
+            )
 
             dst_start = from_block._offset - offset if offset is not None else 0
             dst_end = dst_start + from_block._length
@@ -125,26 +210,46 @@ class MemoryBlock:
 
         else:
             if offset is None or length is None:
-                raise ValueError("length is required when no from_block is given")
+                raise ValueError("offset and length are required when no from_block is given")
 
             self._offset = offset
             self._length = length
-            data = numpy_full(length, default_value, dtype=np.uint8)
-            address_mask = np.ones_like(length, dtype=bool)
+            data = _numpy_full(
+                length // default_item_size, default_content, dtype=default_dtype
+            ).view(np.uint8)
+            address_mask = np.ones_like(data, dtype=bool)
             self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
 
-    def at(self, idx: Union[int, slice], item_size: int = 4):
+    @overload
+    def at(self, idx: int, item_size: int) -> int:
+        ...
+
+    @overload
+    def at(self, idx: slice, item_size: int) -> ArrayLike:
+        ...
+
+    def at(self, idx: Union[int, slice], item_size: int = 4) -> Union[int, ArrayLike]:
         translated_idx, dtype = self._translate_access(idx, item_size)
         return self.array.data.view(dtype=dtype)[translated_idx]
 
-    def set_at(self, idx: Union[int, slice], value, item_size: int = 4):
+    def set_at(
+        self, idx: Union[int, slice], value: Union[int, ArrayLike], item_size: int = 4
+    ) -> None:
         translated_idx, dtype = self._translate_access(idx, item_size)
         self.array.data.view(dtype=dtype)[translated_idx] = value
 
-    def __getitem__(self, idx: Union[int, slice]):
+    @overload
+    def __getitem__(self, idx: int) -> int:
+        ...
+
+    @overload
+    def __getitem__(self, idx: slice) -> ArrayLike:
+        ...
+
+    def __getitem__(self, idx: Union[int, slice]) -> Union[int, ArrayLike]:
         return self.at(idx)
 
-    def __setitem__(self, idx: Union[int, slice], value) -> None:
+    def __setitem__(self, idx: Union[int, slice], value: Union[int, ArrayLike]) -> None:
         self.set_at(idx, value)
 
     def memory_iter(
@@ -180,7 +285,8 @@ class MemoryBlock:
     def _translate_access(
         self, idx: Union[int, slice], item_size: int
     ) -> Tuple[Union[int, slice], Type[np.dtype]]:
-        dtype = SIZE_TO_DTYPE[item_size]
+        dtype: np.dtype = SIZE_TO_DTYPE[item_size]
+        translated_idx: Union[int, slice]
 
         if isinstance(idx, int):
             translated_idx = (idx - self._offset) // item_size
@@ -200,6 +306,7 @@ class MemoryBlock:
         return translated_idx, dtype
 
     def _tile(self, /, *, start: int, end: int, times: int) -> None:
+        """Inline tile operation. See MemoryBlock.Builder.tile() for details"""
         length = end - start
         src_offset_start = start - self._offset
         src_offset_end = end - self._offset
@@ -214,6 +321,7 @@ class MemoryBlock:
             array_dst[:] = array_src
 
     def _fill(self, /, *, start: int, end: int, value: int, item_size: int) -> None:
+        """Inline fill operation. See MemoryBlock.Builder.fill() for details"""
         dtype = SIZE_TO_DTYPE[item_size]
         offset_start = start - self._offset
         offset_end = end - self._offset
@@ -222,7 +330,7 @@ class MemoryBlock:
         data_dst[:] = value
 
 
-def numpy_full(length: int, value: int, dtype: np.dtype) -> np.ndarray:
+def _numpy_full(length: int, value: int, dtype: np.dtype) -> np.ndarray:
     # numpy doesn't seem to handle numpy.full(..., filL_value=0) in any special way.
     # Using np.zeros() for that case here provides a significant speedup for large arrays.
     if value == 0:

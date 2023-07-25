@@ -4,17 +4,33 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+"""
+Classes for refererencing SVD elements based on name.
+"""
+
 from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
 from functools import singledispatch
 from itertools import chain
-from typing import Any, Generic, Iterable, List, Optional, Sequence, Tuple, TypeVar, Union, overload
+from typing import (
+    Any,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    overload,
+)
 from typing_extensions import Self
 
 
 T = TypeVar("T")
+
 
 class AbstractSPath(ABC, Sequence[T]):
     """
@@ -31,27 +47,32 @@ class AbstractSPath(ABC, Sequence[T]):
     @property
     @abstractmethod
     def parts(self) -> Tuple[T, ...]:
+        """:return: Path components."""
         ...
 
     @property
     @abstractmethod
     def name(self) -> Optional[str]:
+        """:return: Name of the element pointed to by the path, including any array indices."""
         ...
 
     @property
     @abstractmethod
     def stem(self) -> Optional[str]:
+        """:return: Name of the element pointed to by the path, excluding any array indices"""
         ...
 
     @property
     @abstractmethod
     def parent(self) -> Optional[AbstractSPath]:
+        """:return: Path to the parent element of this path, if it exists."""
         ...
 
     def join(self, *other: Union[T, Sequence[T]]) -> Self:
+        """:return: The path resulting from appending other to the end of this path. """
         return self.__class__(*self.parts, *other)
 
-    @overload 
+    @overload
     def __getitem__(self, item: int, /) -> T:
         ...
 
@@ -59,7 +80,7 @@ class AbstractSPath(ABC, Sequence[T]):
     def __getitem__(self, item: slice, /) -> Self:
         ...
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: Union[int, slice]) -> Union[T, Self]:
         if isinstance(item, slice):
             return self.__class__(*self.parts[item])
         else:
@@ -76,9 +97,7 @@ class AbstractSPath(ABC, Sequence[T]):
 
 
 class FSPath(AbstractSPath[str]):
-    """
-    
-    """
+    """Path to a flat SVD element"""
 
     __slots__ = "_parts"
 
@@ -119,11 +138,12 @@ class FSPath(AbstractSPath[str]):
         return self.name
 
     def to_xpath(self) -> str:
-        """Get an XPath expression that can be used to locate elements having this path"""
+        """:return: An XPath expression that can be used to locate elements having this path"""
         return "." + "".join((f"/*[name='{p}']" for p in self.parts))
 
     def __repr__(self) -> str:
         return ".".join(self.parts)
+
 
 class SPath(AbstractSPath[Union[str, int]]):
     """Path to a SVD element"""
@@ -136,7 +156,7 @@ class SPath(AbstractSPath[Union[str, int]]):
 
         # FIXME: disallow empty, dissallow two consecutive indices
         processed_parts = self._process_parts(parts)
-        
+
         self._parts: Tuple[Union[str, int], ...] = tuple(processed_parts)
 
     @property
@@ -171,16 +191,19 @@ class SPath(AbstractSPath[Union[str, int]]):
         return self[-1]
 
     def to_flat(self) -> FSPath:
+        """Convert the regular path to the equivalent flat path."""
         return FSPath(*(p for p in self.parts if not isinstance(p, int)))
 
     def __repr__(self) -> str:
+        """String representation of the path."""
         return self._format_parts(self.parts)
 
     def _process_parts(
         self,
         parts: Iterable[Union[str, int, Sequence[Union[str, int]]]],
         allow_seq: bool = True,
-    ):
+    ) -> List[Union[str, int]]:
+        """Helper method for converting initialization arguments to a list of parts."""
         split_parts: List[Union[str, int]] = []
 
         for part in parts:
@@ -206,8 +229,8 @@ class SPath(AbstractSPath[Union[str, int]]):
 
         return split_parts
 
-    # FIXME: this doesn't permit leading int, should it?
     def _parse_path_str(self, part: str) -> Iterable[Union[str, int]]:
+        """Convert a string path to a list of parts."""
         parsed_parts: List[Union[str, int]] = []
 
         remaining = part
@@ -237,6 +260,7 @@ class SPath(AbstractSPath[Union[str, int]]):
 
     @staticmethod
     def _format_parts(parts: Iterable[Union[str, int]]) -> str:
+        """Format parts as a string path."""
         formatted_parts: List[str] = []
 
         for part in parts:
@@ -251,7 +275,7 @@ class SPath(AbstractSPath[Union[str, int]]):
         return "".join(formatted_parts)
 
 
-AnySPath = Union[SPath, FSPath]
+SPathUnion = Union[SPath, FSPath]
 
 
 SPathType = TypeVar("SPathType", SPath, FSPath)
