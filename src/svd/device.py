@@ -442,7 +442,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
 
             instance_offset = 0
 
-        if isinstance(parent, Array):
+        elif isinstance(parent, Array):
             description = parent._description
 
             index = path.element_index
