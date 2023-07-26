@@ -1073,7 +1073,7 @@ class _Field(Generic[FieldParent]):
         """
         self._description: _FieldSpec = description
         self._register: FieldParent = register
-        self._allowed_values = description.allowed_values
+        self._allowed_values: Collection[int] = description.allowed_values
 
     @property
     def name(self) -> str:
