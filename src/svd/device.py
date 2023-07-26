@@ -34,6 +34,7 @@ from typing import (
     Generic,
     Iterable,
     Iterator,
+    Literal,
     Mapping,
     NamedTuple,
     NoReturn,
@@ -286,6 +287,14 @@ class Peripheral(Mapping[str, RegisterUnion]):
             keys=self._register_descriptions.keys(), factory=self.__getitem__
         )
 
+    @overload
+    def register_iter(self, leaf_only: Literal[True]) -> Iterator[Register]:
+        ...
+
+    @overload
+    def register_iter(self, leaf_only: Literal[False]) -> Iterator[RegisterUnion]:
+        ...
+
     def register_iter(self, leaf_only: bool = False) -> Iterator[RegisterUnion]:
         """
         Iterator over the registers in the peripheral in pre-order.
@@ -307,6 +316,14 @@ class Peripheral(Mapping[str, RegisterUnion]):
             keys=self._register_descriptions.keys(),
             factory=lambda n: self._get_or_create_register(FSPath(n)),
         )
+
+    @overload
+    def flat_register_iter(self, leaf_only: Literal[True]) -> Iterator[FlatRegister]:
+        ...
+
+    @overload
+    def flat_register_iter(self, leaf_only: Literal[False]) -> Iterator[FlatRegisterUnion]:
+        ...
 
     def flat_register_iter(
         self, leaf_only: bool = False
