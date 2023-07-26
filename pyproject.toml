@@ -15,6 +15,7 @@ requires-python = ">=3.8"
 dependencies = [
   "setuptools_scm[toml]>=6.2",
   "lxml",
+  "numpy",
   "typing_extensions",
 ]
 
