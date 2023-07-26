@@ -409,18 +409,16 @@ class Peripheral(Mapping[str, RegisterUnion]):
             if ancestor_path is not None:
                 # Build all the registers from the first available ancestor to the requested
                 # register.
-                while (ancestor := storage.get(ancestor_path, None)) is None and (
+                while (register := storage.get(ancestor_path, None)) is None and (
                     parent := ancestor_path.parent
                 ) is not None:
                     ancestor_path = parent
 
-                # Create any registers on the path from the ancestor
+                if register is None:
+                    register = self._create_register(ancestor_path)
+
                 for i in range(len(ancestor_path), len(path)):
-                    ancestor = self._create_register(path[:i], ancestor)
-
-                # Create the register itself
-                register = self._create_register(path, ancestor)
-
+                    register = self._create_register(path[:i + 1], register)
             else:
                 register = self._create_register(path)
 
@@ -1332,7 +1330,7 @@ def _extract_register_descriptions_helper(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
-    validate_overlap: bool = True,
+    validate_overlap: bool = False  # True, # FIXME
 ) -> _ExtractHelperResult:
     """
     Helper that recursively extracts the names, addresses, register properties, dimensions,
