@@ -273,7 +273,7 @@ class MemoryBlock:
             endpoint=False,
             dtype=int,
         )[address_filter][::item_size]
-        values = self.array[address_filter].view(dtype)
+        values = self.array.data[address_filter].view(dtype)
 
         for address, value in zip(addresses, values):
             yield int(address), int(value)
