@@ -202,11 +202,13 @@ class MemoryBlock:
             self._array: ma.MaskedArray = ma.MaskedArray(
                 data=data, mask=address_mask, dtype=np.uint8
             )
+            self._written = np.zeros_like(data, dtype=bool)
 
             dst_start = from_block._offset - offset if offset is not None else 0
             dst_end = dst_start + from_block._length
             self._array.mask[dst_start:dst_end] &= from_block.array.mask
             np.copyto(dst=self._array[dst_start:dst_end], src=from_block.array)
+            np.copyto(dst=self._written[dst_start:dst_end], src=from_block._written)
 
         else:
             if offset is None or length is None:
@@ -219,6 +221,7 @@ class MemoryBlock:
             ).view(np.uint8)
             address_mask = np.ones_like(data, dtype=bool)
             self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
+            self._written = np.zeros_like(data, dtype=bool)
 
     @overload
     def at(self, idx: int, item_size: int) -> int:
@@ -237,6 +240,7 @@ class MemoryBlock:
     ) -> None:
         translated_idx, dtype = self._translate_access(idx, item_size)
         self.array.data.view(dtype=dtype)[translated_idx] = value
+        self._written[idx] = True
 
     @overload
     def __getitem__(self, idx: int) -> int:
@@ -253,15 +257,22 @@ class MemoryBlock:
         self.set_at(idx, value)
 
     def memory_iter(
-        self, item_size: int = 4, with_offset: int = 0
+        self, item_size: int = 4, with_offset: int = 0, written_only: bool = False
     ) -> Iterator[Tuple[int, int]]:
+        """
+        
+        """
         if self._length % item_size != 0:
             raise ValueError(
                 f"Memory block length {self._length} is not divisible by {item_size}"
             )
 
         dtype = SIZE_TO_DTYPE[item_size]
+
         inverse_mask = ~self.array.mask
+        if written_only:
+            inverse_mask &= self._written
+
         address_start = self._offset + with_offset
         addresses = np.linspace(
             address_start,

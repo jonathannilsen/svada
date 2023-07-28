@@ -23,59 +23,23 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property, singledispatchmethod
 from types import MappingProxyType
-from typing import (
-    Any,
-    Callable,
-    Collection,
-    List,
-    Tuple,
-    Union,
-    Dict,
-    Generic,
-    Iterable,
-    Iterator,
-    Literal,
-    Mapping,
-    NamedTuple,
-    NoReturn,
-    Optional,
-    Protocol,
-    Reversible,
-    Sequence,
-    Type,
-    TypeVar,
-    overload,
-)
+from typing import (Any, Callable, Collection, Dict, Generic, Iterable,
+                    Iterator, List, Literal, Mapping, NamedTuple, NoReturn,
+                    Optional, Protocol, Reversible, Sequence, Tuple, Type,
+                    TypeVar, Union, overload)
+
 from typing_extensions import TypeGuard
 
 from . import bindings
-from .bindings import (
-    Access,
-    Cpu,
-    RegisterProperties,
-    Dimensions,
-    WriteAction,
-    ReadAction,
-    WriteConstraint,
-)
-from ._device import (
-    ChildIter,
-    LazyFixedMapping,
-    remove_registers,
-    topo_sort_derived_peripherals,
-    svd_element_repr,
-    iter_merged,
-    strip_suffix,
-)
-from .errors import (
-    SvdIndexError,
-    SvdKeyError,
-    SvdMemoryError,
-    SvdPathError,
-    SvdDefinitionError,
-)
+from ._device import (ChildIter, LazyFixedMapping, iter_merged,
+                      remove_registers, strip_suffix, svd_element_repr,
+                      topo_sort_derived_peripherals)
+from .bindings import (Access, Cpu, Dimensions, ReadAction, RegisterProperties,
+                       WriteAction, WriteConstraint)
+from .errors import (SvdDefinitionError, SvdIndexError, SvdKeyError,
+                     SvdMemoryError, SvdPathError)
 from .memory_block import MemoryBlock
-from .path import SPath, FSPath, SPathType
+from .path import FSPath, SPath, SPathType
 
 
 @dataclass(frozen=True)
@@ -322,7 +286,9 @@ class Peripheral(Mapping[str, RegisterUnion]):
         ...
 
     @overload
-    def flat_register_iter(self, leaf_only: Literal[False]) -> Iterator[FlatRegisterUnion]:
+    def flat_register_iter(
+        self, leaf_only: Literal[False]
+    ) -> Iterator[FlatRegisterUnion]:
         ...
 
     def flat_register_iter(
@@ -359,6 +325,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         item_size: int = 1,
         absolute_addresses: bool = False,
         native_byteorder: bool = False,
+        written_only: bool = False,
     ) -> Iterator[Tuple[int, int]]:
         """
         Get an iterator over the peripheral register contents.
@@ -366,11 +333,15 @@ class Peripheral(Mapping[str, RegisterUnion]):
         :param item_size: Byte granularity of the iterator.
         :param absolute_addresses: If True, use absolute instead of peripheral relative addresses.
         :param native_byteorder: If true, use native byte order instead of device byte order.
+        :param written_only: If true, only include those addresses that have been explicitly
+        written to.
         :return: Iterator over the peripheral register contents.
         """
         # TODO: actually use byteorder
         address_offset = self.base_address if absolute_addresses else 0
-        yield from self._memory_block.memory_iter(item_size, with_offset=address_offset)
+        yield from self._memory_block.memory_iter(
+            item_size, with_offset=address_offset, written_only=written_only
+        )
 
     def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterUnion:
         """
@@ -435,7 +406,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
                     register = self._create_register(ancestor_path)
 
                 for i in range(len(ancestor_path), len(path)):
-                    register = self._create_register(path[:i + 1], register)
+                    register = self._create_register(path[: i + 1], register)
             else:
                 register = self._create_register(path)
 
@@ -1347,7 +1318,7 @@ def _extract_register_descriptions_helper(
     elements: Iterable[Union[bindings.RegisterElement, bindings.ClusterElement]],
     base_reg_props: bindings.RegisterProperties,
     base_address: int = 0,
-    validate_overlap: bool = False  # True, # FIXME
+    validate_overlap: bool = False,  # True, # FIXME
 ) -> _ExtractHelperResult:
     """
     Helper that recursively extracts the names, addresses, register properties, dimensions,
