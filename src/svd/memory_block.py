@@ -202,7 +202,7 @@ class MemoryBlock:
             self._array: ma.MaskedArray = ma.MaskedArray(
                 data=data, mask=address_mask, dtype=np.uint8
             )
-            self._written = np.zeros_like(data, dtype=bool)
+            self._written = np.zeros_like(data, dtype=np.uint8)
 
             dst_start = from_block._offset - offset if offset is not None else 0
             dst_end = dst_start + from_block._length
@@ -221,7 +221,7 @@ class MemoryBlock:
             ).view(np.uint8)
             address_mask = np.ones_like(data, dtype=bool)
             self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
-            self._written = np.zeros_like(data, dtype=bool)
+            self._written = np.zeros_like(data, dtype=np.uint8)
 
     @overload
     def at(self, idx: int, item_size: int) -> int:
@@ -240,7 +240,7 @@ class MemoryBlock:
     ) -> None:
         translated_idx, dtype = self._translate_access(idx, item_size)
         self.array.data.view(dtype=dtype)[translated_idx] = value
-        self._written[idx] = True
+        self._written.view(dtype=dtype)[translated_idx] = 2**(8 * item_size) - 1 # pls fix
 
     @overload
     def __getitem__(self, idx: int) -> int:
@@ -271,7 +271,7 @@ class MemoryBlock:
 
         inverse_mask = ~self.array.mask
         if written_only:
-            inverse_mask &= self._written
+            inverse_mask = inverse_mask[self._written.view(dtype=bool)]
 
         address_start = self._offset + with_offset
         addresses = np.linspace(
