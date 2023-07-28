@@ -30,12 +30,16 @@ from .device import (
     Array,
     Field,
     FlatRegister,
+    FlatRegisterUnion,
+    FlatRegisterType,
     FlatStruct,
     FlatField,
     Device,
     Options,
     Peripheral,
     Register,
+    RegisterUnion,
+    RegisterType,
     Struct,
 )
 

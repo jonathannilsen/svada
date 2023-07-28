@@ -51,17 +51,23 @@ class Options:
     )
 
 
-# Regular register types
+# Union of regular register types
 RegisterUnion = Union["Array", "Register", "Struct"]
 
-# Flat register types
+# Generic type variable contrained to being a regular register type
+RegisterType = TypeVar("RegisterType", "Array", "Register", "Struct")
+
+# Union of flat register types
 FlatRegisterUnion = Union["FlatRegister", "FlatStruct"]
 
+# Generic type variable constrained to being a flat register type
+FlatRegisterType = TypeVar("FlatRegisterType", "FlatRegister", "FlatStruct")
+
 # Type variable constrained to either a regular or a flat register (but not a mix of regular/flat)
-RegisterClass = TypeVar("RegisterClass", "RegisterUnion", "FlatRegisterUnion")
+RegisterKindType = TypeVar("RegisterKindType", RegisterUnion, FlatRegisterUnion)
 
 # Type variable constrained to either a regular or flat field
-FieldClass = TypeVar("FieldClass", "Field", "FlatField")
+FieldKindType = TypeVar("FieldKindType", "Field", "FlatField")
 
 
 class Device(Mapping[str, "Peripheral"]):
@@ -388,8 +394,8 @@ class Peripheral(Mapping[str, RegisterUnion]):
         return self._do_get_or_create_register(self._flat_registers, path)
 
     def _do_get_or_create_register(
-        self, storage: Dict[SPathType, RegisterClass], path: SPathType
-    ) -> RegisterClass:
+        self, storage: Dict[SPathType, RegisterKindType], path: SPathType
+    ) -> RegisterKindType:
         try:
             register = storage[path]
         except KeyError:
@@ -712,7 +718,7 @@ class Array(_RegisterNode[SPath], Sequence[RegisterUnion]):
         )
 
 
-class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
+class _Struct(_RegisterNode, Mapping[str, RegisterKindType]):
     """Class implementing common struct functionality."""
 
     __slots__ = ["_registers"]
@@ -721,7 +727,7 @@ class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
         """See parent class for a description of parameters."""
         super().__init__(**kwargs)
 
-        self._registers: Optional[Mapping[str, RegisterClass]] = None
+        self._registers: Optional[Mapping[str, RegisterKindType]] = None
 
     @property
     def leaf(self) -> bool:
@@ -729,7 +735,7 @@ class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
         return False
 
     @property
-    def registers(self) -> Mapping[str, RegisterClass]:
+    def registers(self) -> Mapping[str, RegisterKindType]:
         """:return A mapping of registers in the structure, ordered by ascending address."""
         if self._registers is None:
             self._registers = LazyFixedMapping(
@@ -738,7 +744,7 @@ class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
 
         return self._registers
 
-    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterClass:
+    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterKindType:
         """
         :param index: Index of the register in the register array.
         :return: The instance of the specified register.
@@ -753,7 +759,7 @@ class _Struct(_RegisterNode, Mapping[str, RegisterClass]):
         """:return: Number of registers in the register structure"""
         return len(self._description.registers)
 
-    def child_iter(self) -> Reversible[RegisterClass]:
+    def child_iter(self) -> Reversible[RegisterKindType]:
         return ChildIter(self._description.registers.keys(), self.__getitem__)
 
     def __repr__(self) -> str:
@@ -793,14 +799,14 @@ class Struct(_Struct[RegisterUnion]):
         _register_set_content(self, path, content)
 
 
-class _Register(_RegisterNode, Mapping[str, FieldClass]):
+class _Register(_RegisterNode, Mapping[str, FieldKindType]):
     __slots__ = ["_fields"]
 
     def __init__(self, **kwargs: Any) -> None:
         """See parent class for a description of parameters."""
         super().__init__(**kwargs)
 
-        self._fields: Optional[Mapping[str, FieldClass]] = None
+        self._fields: Optional[Mapping[str, FieldKindType]] = None
 
     @property
     def leaf(self) -> bool:
@@ -837,7 +843,7 @@ class _Register(_RegisterNode, Mapping[str, FieldClass]):
         return self._description.element.read_action
 
     @property
-    def fields(self) -> Mapping[str, FieldClass]:
+    def fields(self) -> Mapping[str, FieldKindType]:
         """Map of fields in the register, indexed by name"""
         if self._fields is None:
             self._fields = LazyFixedMapping(
@@ -847,7 +853,7 @@ class _Register(_RegisterNode, Mapping[str, FieldClass]):
 
         return MappingProxyType(self._fields)
 
-    def __getitem__(self, name: str) -> FieldClass:
+    def __getitem__(self, name: str) -> FieldKindType:
         """
         :param name: Field name.
         :return: The instance of the specified field.
@@ -868,7 +874,7 @@ class _Register(_RegisterNode, Mapping[str, FieldClass]):
         return len(self._description.fields)
 
     @abstractmethod
-    def _create_field(self, name: str) -> FieldClass:
+    def _create_field(self, name: str) -> FieldKindType:
         ...
 
 
