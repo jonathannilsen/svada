@@ -7,27 +7,15 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import (
-    Any,
-    Dict,
-    Callable,
-    Iterator,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
-    Type,
-    Union,
-    overload,
-)
-from typing_extensions import Self
+from typing import (Any, Callable, Dict, Iterator, List, Mapping, Optional,
+                    Tuple, Type, Union, overload)
 
 import numpy as np
 import numpy.ma as ma
 from numpy.typing import ArrayLike
+from typing_extensions import Self
 
 from .errors import SvdMemoryError
-
 
 SIZE_TO_DTYPE: Mapping[int, np.dtype] = {
     1: np.uint8,
@@ -212,7 +200,9 @@ class MemoryBlock:
 
         else:
             if offset is None or length is None:
-                raise ValueError("offset and length are required when no from_block is given")
+                raise ValueError(
+                    "offset and length are required when no from_block is given"
+                )
 
             self._offset = offset
             self._length = length
@@ -240,7 +230,9 @@ class MemoryBlock:
     ) -> None:
         translated_idx, dtype = self._translate_access(idx, item_size)
         self.array.data.view(dtype=dtype)[translated_idx] = value
-        self._written.view(dtype=dtype)[translated_idx] = 2**(8 * item_size) - 1 # pls fix
+        self._written.view(dtype=dtype)[translated_idx] = (
+            2 ** (8 * item_size) - 1
+        )  # pls fix
 
     @overload
     def __getitem__(self, idx: int) -> int:
@@ -259,9 +251,7 @@ class MemoryBlock:
     def memory_iter(
         self, item_size: int = 4, with_offset: int = 0, written_only: bool = False
     ) -> Iterator[Tuple[int, int]]:
-        """
-        
-        """
+        """ """
         if self._length % item_size != 0:
             raise ValueError(
                 f"Memory block length {self._length} is not divisible by {item_size}"
@@ -269,9 +259,11 @@ class MemoryBlock:
 
         dtype = SIZE_TO_DTYPE[item_size]
 
-        inverse_mask = ~self.array.mask
+        address_filter = ~self.array.mask
         if written_only:
-            inverse_mask = inverse_mask[self._written.view(dtype=bool)]
+            address_filter = np.logical_and(
+                address_filter, self._written.view(dtype=bool)
+            )
 
         address_start = self._offset + with_offset
         addresses = np.linspace(
@@ -280,7 +272,7 @@ class MemoryBlock:
             num=self._length,
             endpoint=False,
             dtype=int,
-        )[inverse_mask][::item_size]
+        )[address_filter][::item_size]
         values = self.array.compressed().view(dtype)
 
         for address, value in zip(addresses, values):
