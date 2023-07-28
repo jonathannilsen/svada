@@ -25,7 +25,7 @@ from .errors import (
 from .parsing import (
     parse,
 )
-from .path import SPath
+from .path import FSPath, SPath
 from .device import (
     Array,
     Field,
