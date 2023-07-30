@@ -100,7 +100,7 @@ class Device(Mapping[str, "Peripheral"]):
             peripheral = Peripheral(
                 peripheral_element,
                 device=self,
-                base_reg_props=self._reg_props,
+                parent_reg_props=self._reg_props,
                 base_peripheral=base_peripheral,
             )
 
@@ -177,7 +177,6 @@ class Device(Mapping[str, "Peripheral"]):
         return svd_element_repr(self.__class__, self.qualified_name, length=len(self))
 
 
-# FIXME: make sure that copied memory is clean, otherwise fall back to retraversing
 class Peripheral(Mapping[str, RegisterUnion]):
     """
     Representation of a specific device peripheral.
@@ -192,7 +191,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         self,
         element: bindings.PeripheralElement,
         device: Optional[Device],
-        base_reg_props: bindings.RegisterProperties,
+        parent_reg_props: bindings.RegisterProperties,
         base_peripheral: Optional[Peripheral] = None,
         new_base_address: Optional[int] = None,
     ):
@@ -211,7 +210,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
             element.base_address if new_base_address is None else new_base_address
         )
         self._reg_props: bindings.RegisterProperties = (
-            self._peripheral.get_register_properties(base_props=base_reg_props)
+            self._peripheral.get_register_properties(base_props=parent_reg_props)
         )
 
         # These dicts store every register associated with the peripheral.
@@ -228,7 +227,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         return Peripheral(
             element=self._peripheral,
             device=None,
-            base_reg_props=self._reg_props,
+            parent_reg_props=self._reg_props,
             base_peripheral=self,
             new_base_address=new_base_address,
         )

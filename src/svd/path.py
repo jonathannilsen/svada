@@ -29,16 +29,16 @@ from typing import (
 from typing_extensions import Self
 
 
-T = TypeVar("T")
+PartT = TypeVar("PartT")
 
 
-class AbstractSPath(ABC, Sequence[T]):
+class AbstractSPath(ABC, Sequence[PartT]):
     """
     A type used to describe paths of named SVD elements.
     """
 
     @abstractmethod
-    def __init__(self, *parts: Union[T, Sequence[T]]) -> None:
+    def __init__(self, *parts: Union[PartT, Sequence[PartT]]) -> None:
         """
         :param parts: Path segments
         """
@@ -46,7 +46,7 @@ class AbstractSPath(ABC, Sequence[T]):
 
     @property
     @abstractmethod
-    def parts(self) -> Tuple[T, ...]:
+    def parts(self) -> Tuple[PartT, ...]:
         """:return: Path components."""
         ...
 
@@ -68,19 +68,19 @@ class AbstractSPath(ABC, Sequence[T]):
         """:return: Path to the parent element of this path, if it exists."""
         ...
 
-    def join(self, *other: Union[T, Sequence[T]]) -> Self:
+    def join(self, *other: Union[PartT, Sequence[PartT]]) -> Self:
         """:return: The path resulting from appending other to the end of this path. """
         return self.__class__(*self.parts, *other)
 
     @overload
-    def __getitem__(self, item: int, /) -> T:
+    def __getitem__(self, item: int, /) -> PartT:
         ...
 
     @overload
     def __getitem__(self, item: slice, /) -> Self:
         ...
 
-    def __getitem__(self, item: Union[int, slice]) -> Union[T, Self]:
+    def __getitem__(self, item: Union[int, slice], /) -> Union[PartT, Self]:
         if isinstance(item, slice):
             return self.__class__(*self.parts[item])
         else:
@@ -95,24 +95,37 @@ class AbstractSPath(ABC, Sequence[T]):
     def __eq__(self, other: Any) -> bool:
         return self.parts == other
 
+    @abstractmethod
+    def __repr__(self) -> str:
+        ...
+
 
 class FSPath(AbstractSPath[str]):
-    """Path to a flat SVD element"""
+    """
+    Path to a flat SVD register level element.
+    An FSPath like "REGISTER_A.REGISTER_B" refers to the element with name "REGISTER_B" with a
+    parent with the name "REGISTER_A".
+
+    FSPaths refer to SVD register level elements by name without considering array dimensions,
+    corresponding directly to how the elements are structured in the SVD file.
+    """
 
     __slots__ = "_parts"
 
     def __init__(self, *parts: Union[str, Sequence[str]]) -> None:
-        if not parts:
-            raise ValueError(f"Empty {self.__class__.__name__} not allowed")
-
         split_parts: List[str] = []
 
         for part in parts:
             if isinstance(part, str):
                 split_parts.extend(part.split("."))
+            elif isinstance(part, FSPath):
+                split_parts.extend(part)
             else:
                 sub_parts = (p.split(".") for p in part)
                 split_parts.extend(chain.from_iterable(sub_parts))
+
+        if not split_parts:
+            raise ValueError(f"Empty {self.__class__.__name__} not allowed")
 
         if any(not p for p in split_parts):
             raise ValueError(f"Invalid {self.__class__.__name__} parts: {parts}")
@@ -138,7 +151,7 @@ class FSPath(AbstractSPath[str]):
         return self.name
 
     def to_xpath(self) -> str:
-        """:return: An XPath expression that can be used to locate elements having this path"""
+        """:return: An XPath expression that can be used to locate XML elements having this path"""
         return "." + "".join((f"/*[name='{p}']" for p in self.parts))
 
     def __repr__(self) -> str:
@@ -146,16 +159,17 @@ class FSPath(AbstractSPath[str]):
 
 
 class SPath(AbstractSPath[Union[str, int]]):
-    """Path to a SVD element"""
+    """
+    Path to a SVD element.
+    """
 
     __slots__ = "_parts"
 
     def __init__(self, *parts: Union[str, int, Sequence[Union[str, int]]]) -> None:
-        if not parts:
-            raise ValueError(f"Empty {self.__class__.__name__} not allowed")
-
-        # FIXME: disallow empty, dissallow two consecutive indices
         processed_parts = self._process_parts(parts)
+
+        if not processed_parts:
+            raise ValueError(f"Empty {self.__class__.__name__} not allowed")
 
         self._parts: Tuple[Union[str, int], ...] = tuple(processed_parts)
 
@@ -208,16 +222,18 @@ class SPath(AbstractSPath[Union[str, int]]):
 
         for part in parts:
             if isinstance(part, str):
-                if not part.isalpha():
-                    split_parts.extend(self._parse_path_str(part))
-                else:
+                if part.isalpha():
+                    # Part is trivially correct; skip complex parsing
                     split_parts.append(part)
+                else:
+                    split_parts.extend(self._parse_path_str(part))
 
             elif isinstance(part, int):
                 split_parts.append(part)
 
             elif allow_seq and isinstance(part, Sequence):
                 if isinstance(part, SPath):
+                    # Part is already processed; skip complex parsing
                     split_parts.extend(part.parts)
                 else:
                     split_parts.extend(self._process_parts(part, False))
@@ -275,7 +291,8 @@ class SPath(AbstractSPath[Union[str, int]]):
         return "".join(formatted_parts)
 
 
+# Union of SVD path types
 SPathUnion = Union[SPath, FSPath]
 
-
+# Generic type variable constrained to being a specific SVD path type
 SPathType = TypeVar("SPathType", SPath, FSPath)
