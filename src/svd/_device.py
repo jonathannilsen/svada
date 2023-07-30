@@ -14,24 +14,9 @@ import re
 from abc import ABC
 from collections import defaultdict
 from types import MappingProxyType
-from typing import (
-    Any,
-    Callable,
-    Collection,
-    Dict,
-    Iterable,
-    Iterator,
-    Generic,
-    List,
-    Mapping,
-    Optional,
-    Reversible,
-    Sequence,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import (Any, Callable, Collection, Dict, Generic, Iterable,
+                    Iterator, List, Mapping, Optional, Reversible, Sequence,
+                    Tuple, Type, TypeVar, Union)
 
 from . import bindings
 from .path import SPath
@@ -202,8 +187,10 @@ class LazyFixedMapping(Mapping[str, T]):
     """
 
     def __init__(
-        self, keys: Iterable[str], factory: Callable[[str], T], **kwargs: Any
-    ) -> None:
+        self, keys: Iterable[str],
+        factory: Callable[[Union[str, Sequence[Union[str, Any]]]], T],
+        **kwargs: Any
+        ) -> None:
         """
         :param keys: Keys contained in the mapping.
         :param factory: Factory function which is called to initialize
@@ -214,13 +201,23 @@ class LazyFixedMapping(Mapping[str, T]):
 
         super().__init__(**kwargs)
 
-    def __getitem__(self, key: str) -> T:
-        value = self._storage[key]
+    def __getitem__(self, key: Union[str, Sequence[Union[str, Any]]], /) -> T:
+        if isinstance(key, str):
+            this_key = key
+            rest_key = ()
+        else:
+            this_key = key[0]
+            rest_key = key[1:]
+
+        value = self._storage[this_key]
         if value is None:
             value = self._factory(key)
-            self._storage[key] = value
+            self._storage[this_key] = value
 
-        return value
+        if rest_key:
+            return value[rest_key]
+        else:
+            return value
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._storage)
