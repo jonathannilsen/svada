@@ -207,7 +207,7 @@ class LazyFixedMapping(Mapping[str, T]):
             rest_key = ()
         else:
             this_key = key[0]
-            rest_key = key[1:]
+            rest_key = key[1:] if len(key) > 1 else ()
 
         value = self._storage[this_key]
         if value is None:
