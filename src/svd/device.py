@@ -243,6 +243,15 @@ class Peripheral(Mapping[str, RegisterUnion]):
         return self._base_address
 
     @property
+    def address_bounds(self) -> Tuple[int, int]:
+        """Minimum and maximum address occupied by the registers in the peripheral."""
+        bounds = self._register_info.address_bounds
+        if bounds is None:
+            raise SvdMemoryError(f"{self!s} has no registers")
+        min_offset, max_offset = bounds
+        return (self.base_address + min_offset, self.base_address + max_offset)
+
+    @property
     def interrupts(self) -> Mapping[str, int]:
         """Interrupts associated with the peripheral. Mapping from interrupt name to value."""
         return {
@@ -743,7 +752,9 @@ class _Struct(_RegisterNode, Mapping[str, RegisterKindType]):
 
         return self._registers
 
-    def __getitem__(self, path: Union[str, Sequence[Union[str, int]]]) -> RegisterKindType:
+    def __getitem__(
+        self, path: Union[str, Sequence[Union[str, int]]]
+    ) -> RegisterKindType:
         """
         :param index: Index of the register in the register array.
         :return: The instance of the specified register.
@@ -1260,6 +1271,7 @@ class _ExtractedRegisterInfo(NamedTuple):
 
     descriptions: Mapping[str, _RegisterSpec]
     memory_builder: MemoryBlock.Builder
+    address_bounds: Optional[Tuple[int, int]]
 
 
 def _extract_register_info(
@@ -1284,7 +1296,7 @@ def _extract_register_info(
     if base_memory is not None:
         memory_builder.lazy_copy_from(base_memory)
 
-    description_list, min_addresss, max_address = _extract_register_descriptions_helper(
+    description_list, min_address, max_address = _extract_register_descriptions_helper(
         memory_builder, elements, base_reg_props
     )
 
@@ -1303,13 +1315,15 @@ def _extract_register_info(
 
     if description_list:
         # Use the child address range if there is at least one child
-        memory_builder.set_extent(
-            offset=min_addresss, length=max_address - min_addresss
-        )
+        memory_builder.set_extent(offset=min_address, length=max_address - min_address)
 
     memory_builder.set_default_content(base_reg_props.reset_value)
 
-    return _ExtractedRegisterInfo(descriptions, memory_builder)
+    return _ExtractedRegisterInfo(
+        descriptions,
+        memory_builder,
+        address_bounds=(min_address, max_address) if description_list else None,
+    )
 
 
 class _ExtractHelperResult(NamedTuple):
