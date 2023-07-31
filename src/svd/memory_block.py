@@ -213,6 +213,10 @@ class MemoryBlock:
             self._array = ma.MaskedArray(data=data, mask=address_mask, dtype=np.uint8)
             self._written = np.zeros_like(data, dtype=np.uint8)
 
+    def is_written(self, idx: Union[int, slice]) -> bool:
+        translated_idx, dtype = self._translate_access(idx, item_size=1)
+        return bool(self._written.view(dtype=dtype)[translated_idx]).any())
+
     @overload
     def at(self, idx: int, item_size: int) -> int:
         ...

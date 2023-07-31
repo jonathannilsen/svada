@@ -946,6 +946,11 @@ class Register(_Register["Field"]):
         return self.content != self.reset_content
 
     @property
+    def written(self) -> bool:
+        """True if the register content has been written."""
+        return self._peripheral._memory_block.is_written(self.offset)
+
+    @property
     def content(self) -> int:
         """Current value of the register."""
         content = self._peripheral._memory_block.at(self.offset, self.bit_width // 8)
@@ -1443,11 +1448,12 @@ def _extract_register_descriptions_helper(
                     address_start = sub_min_address
 
                 if dim_props is not None and dim_props.length > 1:
+                    # FIXME: should this use sub_min_address? address of the cluster doesn't *really* matter
                     if dim_props.step < sub_max_address - address_start:
                         raise SvdDefinitionError(
                             element,
                             f"step of 0x{dim_props.step:x} is less than the size required to "
-                            f"cover all the child elements (0x{sub_max_address - address_start})",
+                            f"cover all the child elements (0x{sub_max_address - address_start:x})",
                         )
 
                     address_end = address_start + dim_props.step * dim_props.length

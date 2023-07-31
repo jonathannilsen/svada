@@ -22,14 +22,14 @@ class SvdParseError(SvdError):
     ...
 
 
-class SvdDefinitionError(ValueError):
+class SvdDefinitionError(SvdError, ValueError):
     """Raised when unrecoverable errors occur due to an invalid definition in the SVD file"""
 
     def __init__(self, binding: Any, explanation: str):
         super().__init__(f"Invalid SVD file elements ({binding}): {explanation}")
 
 
-class SvdMemoryError(BufferError):
+class SvdMemoryError(SvdError, BufferError):
     ...
 
 
