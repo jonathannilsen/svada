@@ -1279,6 +1279,7 @@ def _extract_register_info(
     base_reg_props: bindings.RegisterProperties,
     base_descriptions: Optional[Mapping[str, _RegisterSpec]] = None,
     base_memory: Optional[Callable[[], MemoryBlock]] = None,
+    base_address_bounds: Optional[Tuple[int, int]] = None,
 ) -> _ExtractedRegisterInfo:
     """
     Extract register descriptions for the given SVD register level elements.
@@ -1316,14 +1317,17 @@ def _extract_register_info(
     if description_list:
         # Use the child address range if there is at least one child
         memory_builder.set_extent(offset=min_address, length=max_address - min_address)
+        if base_address_bounds is not None:
+            base_min, base_max = base_address_bounds
+            address_bounds = (min(min_address, base_min), max(max_address, base_max))
+        else:
+            address_bounds = (min_address, max_address)
+    else:
+        address_bounds = base_address_bounds
 
     memory_builder.set_default_content(base_reg_props.reset_value)
 
-    return _ExtractedRegisterInfo(
-        descriptions,
-        memory_builder,
-        address_bounds=(min_address, max_address) if description_list else None,
-    )
+    return _ExtractedRegisterInfo(descriptions, memory_builder, address_bounds)
 
 
 class _ExtractHelperResult(NamedTuple):
