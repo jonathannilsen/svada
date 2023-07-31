@@ -215,7 +215,7 @@ class MemoryBlock:
 
     def is_written(self, idx: Union[int, slice]) -> bool:
         translated_idx, dtype = self._translate_access(idx, item_size=1)
-        return bool(self._written.view(dtype=dtype)[translated_idx]).any())
+        return bool(self._written.view(dtype=dtype)[translated_idx].any())
 
     @overload
     def at(self, idx: int, item_size: int) -> int:
