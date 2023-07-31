@@ -560,11 +560,14 @@ class Peripheral(Mapping[str, RegisterUnion]):
                 base_descriptions = base_info.descriptions
                 base_memory = lambda: base_info.memory_builder.build()
 
+            base_address_bounds = self._base_peripheral._register_info.address_bounds
+
         info = _extract_register_info(
             self._peripheral.registers,
             self._reg_props,
             base_descriptions=base_descriptions,
             base_memory=base_memory,
+            base_address_bounds=base_address_bounds,
         )
 
         return info
