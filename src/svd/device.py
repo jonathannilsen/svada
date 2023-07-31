@@ -543,6 +543,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         """
         base_descriptions: Optional[Mapping[str, _RegisterSpec]] = None
         base_memory: Optional[Callable[[], MemoryBlock]] = None
+        base_address_bounds: Optional[Tuple[int, int]] = None
 
         if self._base_peripheral is not None:
             # If the register properties are equal, then it is possible to reuse all the immutable
