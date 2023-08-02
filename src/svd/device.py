@@ -21,7 +21,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from functools import cached_property, singledispatchmethod
+from functools import cached_property
 from types import MappingProxyType
 from typing import (
     Any,
@@ -416,7 +416,14 @@ class Peripheral(Mapping[str, RegisterUnion]):
         """:return: Number of top-level registers in the peripheral."""
         return len(self._register_descriptions)
 
-    @singledispatchmethod
+    @overload
+    def _get_or_create_register(self, path: SPath) -> RegisterUnion:
+        ...
+
+    @overload
+    def _get_or_create_register(self, path: FSPath) -> FlatRegisterUnion:
+        ...
+
     def _get_or_create_register(self, path: Any) -> Any:
         """
         Common method for accessing a register contained in the peripheral.
@@ -428,15 +435,12 @@ class Peripheral(Mapping[str, RegisterUnion]):
         :param path: Path to the register.
         :return: The register instance at the given path.
         """
-        raise ValueError(f"Invalid path {path}")
-
-    @_get_or_create_register.register
-    def _(self, path: SPath) -> RegisterUnion:
-        return self._do_get_or_create_register(self._dim_registers, path)
-
-    @_get_or_create_register.register
-    def _(self, path: FSPath) -> FlatRegisterUnion:
-        return self._do_get_or_create_register(self._flat_registers, path)
+        if isinstance(path, SPath):
+            return self._do_get_or_create_register(self._dim_registers, path)
+        elif isinstance(path, FSPath):
+            return self._do_get_or_create_register(self._flat_registers, path)
+        else:
+            raise ValueError(f"unrecognized path: {path}")
 
     def _do_get_or_create_register(
         self, storage: Dict[SPathType, RegisterKindType], path: SPathType
@@ -465,12 +469,33 @@ class Peripheral(Mapping[str, RegisterUnion]):
 
         return register
 
-    @singledispatchmethod
-    def _create_register(self, path: Any, parent: Any = None) -> Any:
-        raise ValueError(f"Invalid path: {path}")
+    @overload
+    def _create_register(
+        self, path: SPath, parent: Optional[RegisterUnion] = None
+    ) -> RegisterUnion:
+        ...
 
-    @_create_register.register
-    def _(self, path: SPath, parent: Optional[RegisterUnion] = None) -> RegisterUnion:
+    @overload
+    def _create_register(
+        self, path: FSPath, parent: Optional[FlatRegisterUnion] = None
+    ) -> FlatRegisterUnion:
+        ...
+
+    def _create_register(
+        self,
+        path: Any,
+        parent: Any = None,
+    ) -> Any:
+        if isinstance(path, SPath):
+            return self._create_regular_register(path, parent)
+        elif isinstance(path, FSPath):
+            return self._create_flat_register(path, parent)
+        else:
+            raise ValueError(f"unrecognized path: {path}")
+
+    def _create_regular_register(
+        self, path: SPath, parent: Optional[RegisterUnion] = None
+    ) -> RegisterUnion:
         if parent is None:
             try:
                 description = self._register_descriptions[path.stem]
@@ -523,8 +548,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
             instance_offset=instance_offset,
         )
 
-    @_create_register.register
-    def _(
+    def _create_flat_register(
         self, path: FSPath, parent: Optional[FlatRegisterUnion] = None
     ) -> FlatRegisterUnion:
         """Create a flat register instance."""
