@@ -57,6 +57,7 @@ from ._device import (
     remove_registers,
     strip_suffix,
     svd_element_repr,
+    timed_method,
     topo_sort_derived_peripherals,
 )
 from .bindings import (
@@ -110,8 +111,9 @@ FieldKindType = TypeVar("FieldKindType", "Field", "FlatField")
 class Device(Mapping[str, "Peripheral"]):
     """Representation of a SVD device."""
 
+    @timed_method(max_times=1)
     def __init__(
-        self, device: bindings.DeviceElement, options: Optional[Options] = None
+        self, device: bindings.DeviceElement, options: Optional[Options] = None, **kwargs: Any
     ):
         self._device: bindings.DeviceElement = device
         self._reg_props: RegisterProperties = self._device.register_properties
@@ -146,6 +148,9 @@ class Device(Mapping[str, "Peripheral"]):
         self._peripherals: Dict[str, Peripheral] = dict(
             sorted(peripherals_unsorted.items(), key=lambda kv: kv[1].base_address)
         )
+
+        # Store the time spent parsing prior to calling this constructor 
+        self._time_parse = kwargs.get("time_parse", 0)
 
     @property
     def name(self) -> str:
@@ -282,8 +287,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
     @property
     def address_bounds(self) -> Tuple[int, int]:
         """Minimum and maximum address occupied by the registers in the peripheral."""
-        bounds = self._register_info.address_bounds
-        if bounds is None:
+        bounds = self._register_info.address_bounds if bounds is None:
             raise SvdMemoryError(f"{self!s} has no registers")
         min_offset, max_offset = bounds
         return (self.base_address + min_offset, self.base_address + max_offset)
@@ -310,6 +314,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
     def register_iter(self, leaf_only: Literal[False]) -> Iterator[RegisterUnion]:
         ...
 
+    @timed_method()
     def register_iter(self, leaf_only: bool = False) -> Iterator[RegisterUnion]:
         """
         Iterator over the registers in the peripheral in pre-order.
@@ -342,6 +347,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
     ) -> Iterator[FlatRegisterUnion]:
         ...
 
+    @timed_method()
     def flat_register_iter(
         self, leaf_only: bool = False
     ) -> Iterator[FlatRegisterUnion]:
@@ -371,6 +377,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
             if not register.leaf:
                 stack.extend(reversed(register.child_iter()))
 
+    @timed_method()
     def memory_iter(
         self,
         item_size: int = 1,
@@ -580,6 +587,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         )
 
     @cached_property
+    @timed_method()
     def _memory_block(self) -> MemoryBlock:
         """
         The memory block describing the values in the peripheral.
@@ -597,6 +605,7 @@ class Peripheral(Mapping[str, RegisterUnion]):
         return self._register_info.descriptions
 
     @cached_property
+    @timed_method()
     def _register_info(self) -> _ExtractedRegisterInfo:
         """
         Compute the descriptions of the registers contained in the peripheral, taking into

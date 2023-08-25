@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+from time import perf_counter_ns
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
 
 import lxml.etree as ET

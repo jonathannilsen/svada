@@ -10,9 +10,11 @@ Various internal functionality used by the device module.
 
 from __future__ import annotations
 
+import functools as ft
 import re
 from abc import ABC
 from collections import defaultdict
+from time import perf_counter_ns
 from types import MappingProxyType
 from typing import (
     Any,
@@ -279,3 +281,66 @@ def iter_merged(a: Iterable[T], b: Iterable[T], key: Callable[[T], Any]) -> Iter
             item_b = next(iter_b, __end)
         else:
             break
+
+
+def timed_method(max_times: int = 10) -> Callable[[T], TimedMethod[T]]:
+    """
+    Decorator that records the execution times of a method.
+
+    :param max_times: Number of most recent times to keep.
+    :return: TimedMethod object that wraps the method and records the execution
+    time each time it is called.
+    """
+    def inner(method: T) -> TimedMethod[T]:
+        return TimedMethod(method, max_times)
+
+    return inner
+
+
+class TimedMethod(Generic[T]):
+    """
+    Object wrapper around a method that records the most recent execution times
+    of that method.
+    """
+    def __init__(self, method: T, max_times: int):
+        self._method = method
+        self._max_times = max_times
+        self._times: List[int] = [] 
+        # Zero is the initial circular buffer head when the time buffer reaches its max capacity
+        self._head = 0
+
+    @property
+    def times(self) -> List[int]:
+        """
+        A list of the most recent execution times, ordered from oldest to newest,
+        with a size bounded by max_times.
+        """
+        if len(self._times) >= self._max_times:
+            return self.times[self._head:] + self._times[:self._head]
+        else:
+            return self._times
+
+    @property
+    def max_times(self) -> int:
+        """Maximum number of most recent execution times recorded."""
+        return self._max_times
+
+    # TODO: type annot
+    def __call__(self, *args, **kwargs):
+        t_start = perf_counter_ns()
+
+        result = self._method(*args, **kwargs)
+
+        t_end = perf_counter_ns()
+        self._add_time(t_end - t_start)
+
+        return result
+
+    def _add_time(self, time_ns: int) -> None:
+        # The time list acts as a regular list before it reaches its capacity,
+        # and is used a circular buffer after that
+        if len(self._times) >= self._max_times:
+            self._times[self._head] = time_ns
+            self._head = (self._head + 1) % self._max_times 
+        else:
+            self._times.append(time_ns)
