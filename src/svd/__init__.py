@@ -31,6 +31,7 @@ from .errors import (
 from .parsing import (
     parse,
     Options,
+    UnpickleContext,
 )
 from .path import FEPath, EPath
 from .device import (

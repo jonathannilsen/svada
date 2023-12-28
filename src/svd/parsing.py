@@ -87,10 +87,7 @@ def parse(svd_path: Union[str, Path], options: Options = Options()) -> Device:
         raise FileNotFoundError(f"No such file: {svd_file.absolute()}")
 
     try:
-        # Note: remove comments as otherwise these are present as nodes in the returned XML tree
-        xml_parser = objectify.makeparser(remove_comments=True)
-        class_lookup = _TwoLevelTagLookup(bindings.BINDINGS)
-        xml_parser.set_element_class_lookup(class_lookup)
+        xml_parser = _make_binding_parser()
 
         with open(svd_file, "rb") as f:
             xml_device = objectify.parse(f, parser=xml_parser)
@@ -102,6 +99,31 @@ def parse(svd_path: Union[str, Path], options: Options = Options()) -> Device:
         raise SvdParseError(f"Error parsing SVD file {svd_file}") from e
 
     return device
+
+
+class UnpickleContext:
+    """Context manager for unpickling SVD objects.
+
+    Due to how unpickling is implemented in lxml, it is necessary to use this
+    context manager to correctly unpickle the SVD objects.
+    The implementation updates the lxml default parser via lxml.objectify.set_default_parser(),
+    and will clear any parser set via this method after exiting.
+    """
+
+    def __enter__(self) -> None:
+        objectify.set_default_parser(_make_binding_parser())
+
+    def __exit__(self, exc_type: Any = None, exc_value: Any = None, traceback: Any = None) -> None:
+        objectify.set_default_parser(None)
+
+
+def _make_binding_parser() -> ET.XmlParser:
+    """Make a lxml XmlParser that maps the XML nodes to the SVD binding classes."""
+    # Note: remove comments as otherwise these are present as nodes in the returned XML tree
+    xml_parser = objectify.makeparser(remove_comments=True)
+    class_lookup = _TwoLevelTagLookup(bindings.BINDINGS)
+    xml_parser.set_element_class_lookup(class_lookup)
+    return xml_parser
 
 
 class _TwoLevelTagLookup(ET.ElementNamespaceClassLookup):

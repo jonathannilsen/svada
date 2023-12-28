@@ -70,8 +70,11 @@ class MemoryBlock:
 
             :return: The built memory block.
             """
+            if not self.__dict__:
+                raise RuntimeError("build() can only be called once.")
+
             if self._default_content is None or self._default_item_size is None:
-                raise ValueError("Missing ")
+                raise ValueError("Missing default value parameters")
 
             from_block: Optional[MemoryBlock] = (
                 self._lazy_base_block() if self._lazy_base_block is not None else None
@@ -86,6 +89,9 @@ class MemoryBlock:
 
             for op in self._ops:
                 op(block)
+
+            # Clear all build parameters
+            self.__dict__.clear()
 
             return block
 
