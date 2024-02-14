@@ -24,61 +24,22 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Collection,
-    Dict,
-    Generic,
-    Iterable,
-    Iterator,
-    List,
-    Literal,
-    Mapping,
-    NamedTuple,
-    NoReturn,
-    Optional,
-    Protocol,
-    Reversible,
-    Sequence,
-    Tuple,
-    Type,
-    TypedDict,
-    TypeVar,
-    Union,
-    overload,
-)
+from typing import (TYPE_CHECKING, Any, Callable, Collection, Dict, Generic,
+                    Iterable, Iterator, List, Literal, Mapping, NamedTuple,
+                    NoReturn, Optional, Protocol, Reversible, Sequence, Tuple,
+                    Type, TypedDict, TypeVar, Union, overload)
 
 from typing_extensions import TypeGuard
 
 from . import bindings
-from ._device import (
-    ChildIter,
-    LazyFixedMapping,
-    iter_merged,
-    remove_registers,
-    strip_suffix,
-    svd_element_repr,
-    topo_sort_derived_peripherals,
-)
-from .bindings import (
-    Access,
-    Cpu,
-    Dimensions,
-    FullRegisterProperties,
-    ReadAction,
-    RegisterProperties,
-    WriteAction,
-    WriteConstraint,
-)
-from .errors import (
-    SvdDefinitionError,
-    SvdIndexError,
-    SvdKeyError,
-    SvdMemoryError,
-    SvdPathError,
-)
+from ._device import (ChildIter, LazyFixedMapping, iter_merged,
+                      remove_registers, strip_suffix, svd_element_repr,
+                      topo_sort_derived_peripherals)
+from .bindings import (Access, Cpu, Dimensions, FullRegisterProperties,
+                       ReadAction, RegisterProperties, WriteAction,
+                       WriteConstraint)
+from .errors import (SvdDefinitionError, SvdIndexError, SvdKeyError,
+                     SvdMemoryError, SvdPathError)
 from .memory_block import MemoryBlock
 from .path import EPath, EPathType, FEPath
 from .profiling import TimingReport, create_object_report, timed_method
@@ -286,6 +247,13 @@ class Peripheral(Mapping[str, RegisterUnion]):
         # These dicts store every register associated with the peripheral.
         self._flat_registers: Dict[FEPath, FlatRegisterUnion] = {}
         self._dim_registers: Dict[EPath, RegisterUnion] = {}
+
+    # def __getstate__(self) -> Dict[str, Any]:
+    #     """Get state to be pickled."""
+    #     if "_register_info" in self.__dict__ and self._base_peripheral is not None:
+    #         self._memory_block
+
+    #     return self.__dict__
 
     def copy_to(self, new_base_address: int) -> Peripheral:
         """
@@ -652,7 +620,22 @@ class Peripheral(Mapping[str, RegisterUnion]):
         Note that accessing this property in a derived peripheral may also cause the memory blocks
         of base peripherals to be computed.
         """
-        return self._register_info.memory_builder.build()
+        """
+        Need to make the decision here whether to copy the base memory or to
+        rebuild from the base builder.
+        """
+        builder = self._register_info.memory_builder
+
+        if self._base_peripheral is not None:
+            if self._base_peripheral._reg_props == self._reg_props and not self._base_peripheral._memory_block.is_written():
+                # If the base peripheral has the same register properties and clean memory, then
+                # we can just copy its memory
+                builder.copy_from(self._base_peripheral._memory_block)
+            else:
+                # Otherwise, rebuild the base memory
+                builder.copy_from(self._base_register_info.memory_builder.build())
+
+        return builder.build()
 
     @property
     def _specs(self) -> Mapping[str, _RegisterSpec]:
@@ -666,39 +649,18 @@ class Peripheral(Mapping[str, RegisterUnion]):
         Compute the descriptions of the registers contained in the peripheral, taking into
         account registers derived from the base peripheral, if any.
         """
-        base_descriptions: Optional[Mapping[str, _RegisterSpec]] = None
-        base_memory: Optional[Callable[[], MemoryBlock]] = None
-        base_address_bounds: Optional[Tuple[int, int]] = None
+        base_info: Optional[_ExtractedRegisterInfo] = None
 
         if self._base_peripheral is not None:
-            base_peripheral: Peripheral = self._base_peripheral
-
-            # If the register properties are equal, then it is possible to reuse all the immutable
-            # properties from the base peripheral.
-            if base_peripheral._reg_props == self._reg_props:
-                base_descriptions = base_peripheral._specs
-                base_memory = lambda: base_peripheral._memory_block
-            # Otherwise, traverse the base registers again, because the difference in
-            # register properties propagates down to the register elements.
-            else:
-                base_info = _extract_register_info(
-                    base_peripheral._peripheral.registers,
-                    options=self._options,
-                    base_reg_props=self._reg_props,
-                )
-                base_descriptions = base_info.register_specs
-                base_memory = lambda: base_info.memory_builder.build()
-
-            base_address_bounds = base_peripheral._register_info.address_bounds
+            base_info = self._base_register_info
 
         try:
             info = _extract_register_info(
                 self._peripheral.registers,
                 options=self._options,
                 base_reg_props=self._reg_props,
-                base_specs=base_descriptions,
-                base_memory=base_memory,
-                base_address_bounds=base_address_bounds,
+                base_specs=base_info.register_specs if base_info else None,
+                base_address_bounds=base_info.address_bounds if base_info else None,
             )
         except _MissingDefaultResetValueError:
             raise SvdDefinitionError(
@@ -706,6 +668,27 @@ class Peripheral(Mapping[str, RegisterUnion]):
             )
 
         return info
+
+    @cached_property
+    def _base_register_info(self) -> _ExtractedRegisterInfo:
+        """:return: Register description inherited from the base peripheral."""
+        if self._base_peripheral is None:
+            raise RuntimeError("This peripheral has no base peripheral")
+
+        if self._base_peripheral._reg_props == self._reg_props:
+            # If the register properties are equal, then it is possible to reuse all the immutable
+            # properties from the base peripheral.
+            base_info = self._base_peripheral._register_info
+        else:
+            # Otherwise, traverse the base registers again, because the difference in
+            # register properties propagates down to the register elements.
+            base_info = _extract_register_info(
+                self._base_peripheral._peripheral.registers,
+                options=self._options,
+                base_reg_props=self._reg_props,
+            )
+
+        return base_info
 
     def __repr__(self) -> str:
         """Short peripheral description."""
@@ -1514,7 +1497,6 @@ def _extract_register_info(
     options: Options,
     base_reg_props: bindings.RegisterProperties,
     base_specs: Optional[Mapping[str, _RegisterSpec]] = None,
-    base_memory: Optional[Callable[[], MemoryBlock]] = None,
     base_address_bounds: Optional[Tuple[int, int]] = None,
 ) -> _ExtractedRegisterInfo:
     """
@@ -1526,13 +1508,9 @@ def _extract_register_info(
     :param options: Parsing options.
     :param base_reg_props: Register properties of the peripheral.
     :param base_descriptions: Register descriptions inherited from the base peripheral, if any.
-    :param base_memory: Memory inherited from the base peripheral, if any.
     :return: Map of register descriptions, indexed by name.
     """
     memory_builder = MemoryBlock.Builder()
-
-    if base_memory is not None:
-        memory_builder.lazy_copy_from(base_memory)
 
     spec_list, min_address, max_address = _extract_register_descriptions_helper(
         memory=memory_builder,

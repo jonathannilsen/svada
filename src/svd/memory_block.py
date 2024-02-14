@@ -57,7 +57,7 @@ class MemoryBlock:
         """
 
         def __init__(self) -> None:
-            self._lazy_base_block: Optional[Callable[[], MemoryBlock]] = None
+            self._base_block: Optional[MemoryBlock] = None
             self._offset: Optional[int] = None
             self._length: Optional[int] = None
             self._default_content: Optional[int] = None
@@ -70,32 +70,22 @@ class MemoryBlock:
 
             :return: The built memory block.
             """
-            if not self.__dict__:
-                raise RuntimeError("build() can only be called once.")
-
             if self._default_content is None or self._default_item_size is None:
                 raise ValueError("Missing default value parameters")
-
-            from_block: Optional[MemoryBlock] = (
-                self._lazy_base_block() if self._lazy_base_block is not None else None
-            )
 
             block = MemoryBlock(
                 default_content=self._default_content,
                 length=self._length,
                 offset=self._offset,
-                from_block=from_block,
+                from_block=self._base_block,
             )
 
             for op in self._ops:
                 op(block)
 
-            # Clear all build parameters
-            self.__dict__.clear()
-
             return block
 
-        def lazy_copy_from(self, lazy_block: Callable[[], MemoryBlock]) -> Self:
+        def copy_from(self, block: MemoryBlock) -> Self:
             """
             Use a different memory block as the base for this memory block.
             The lazy_block should be a callable that can be called in build() to get the base
@@ -104,7 +94,8 @@ class MemoryBlock:
             :param lazy_block: Callable that returns the base block.
             :return: The builder instance.
             """
-            self._lazy_base_block = lazy_block
+            # TODO
+            self._base_block = block
             return self
 
         def set_extent(self, offset: int, length: int) -> Self:
@@ -236,10 +227,21 @@ class MemoryBlock:
             np.copyto(dst=self._array[dst_start:dst_end], src=from_block._array)
             np.copyto(dst=self._written[dst_start:dst_end], src=from_block._written)
 
-    def is_written(self, idx: IdxT) -> bool:
-        """:return: True if the given address has been explicitly written to, False otherwise."""
-        translated_idx, dtype = self._translate_access(idx, item_size=1)
-        return bool(self._written.view(dtype=dtype)[translated_idx].any())
+    def is_written(self, idx: Optional[IdxT] = None) -> bool:
+        """
+        Check if a segment of the memory block has been explicitly written to.
+        An index can be given to check only a certain range.
+        By default the whole block is checked.
+
+        :return: True if the given address has been explicitly written to, False otherwise.
+        """
+        if idx is not None:
+            translated_idx, dtype = self._translate_access(idx, item_size=1)
+            any_written = bool(self._written.view(dtype=dtype)[translated_idx].any())
+        else:
+            any_written = bool(self._written.any())
+
+        return any_written
 
     @overload
     def at(self, offset: int, item_size: int = 4) -> int:
