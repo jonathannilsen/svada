@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import enum
+import sys
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, Optional
@@ -70,8 +71,7 @@ class BuildSelector:
 
 
 class DeviceBuilder:
-    """Used to populate peripheral registers and output the register contents in various formats.
-    """
+    """Used to populate peripheral registers and output the register contents in various formats."""
 
     def __init__(self, device: svd.Device, enforce_svd_constraints: bool = True) -> None:
         self._device = device
@@ -235,7 +235,10 @@ class DeviceBuilder:
                         break
                 else:
                     # TODO: logger?
-                    print(f"Address 0x{addr_0:08x} does not correspond to any peripheral")
+                    print(
+                        f"Address 0x{addr_0:08x} does not correspond to any peripheral",
+                        file=sys.stderr,
+                    )
                     continue
 
             assert current_periph_regs is not None
@@ -247,7 +250,8 @@ class DeviceBuilder:
                 print(
                     f"Address 0x{addr_0:08x} is within the address range of {current_periph} "
                     f"[0x{current_periph_range.start:x}-0x{current_periph_range.stop:x}), but "
-                    "does not correspond to any register in the peripheral"
+                    "does not correspond to any register in the peripheral",
+                    file=sys.stderr,
                 )
                 continue
 
