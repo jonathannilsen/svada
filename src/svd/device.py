@@ -1421,7 +1421,6 @@ class Field(_Field):
                 raise ValueError(
                     f"{self!r} does not accept"
                     f" the bit value '{val}' ({hex(val)})."
-                    " Are you sure you have an up to date .svd file?"
                 )
             resolved_value = val
         elif isinstance(new_content, str):
@@ -1429,7 +1428,6 @@ class Field(_Field):
                 raise ValueError(
                     f"{self!r} does not accept"
                     f" the enum '{new_content}'."
-                    " Are you sure you have an up to date .svd file?"
                 )
             resolved_value = self.enums[new_content]
         else:
@@ -1439,6 +1437,16 @@ class Field(_Field):
             )
 
         self._register.set_content(resolved_value << self.bit_offset, self.mask)
+
+    @property
+    def content_enum(self) -> str:
+        """The name of the enum corresponding to the field value."""
+        content = self.content
+        for enum_str, value in self.enums.items():
+            if content == value:
+                return enum_str
+
+        raise LookupError(f"{self!r} content {content} does not correspond to an enum.")
 
     @property
     def modified(self) -> bool:
