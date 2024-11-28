@@ -1,13 +1,9 @@
-#
 # Copyright (c) 2024 Nordic Semiconductor ASA
-#
 # SPDX-License-Identifier: Apache-2.0
-#
 
 from __future__ import annotations
 
 import enum
-import sys
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, Optional
